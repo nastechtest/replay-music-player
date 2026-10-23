@@ -48,8 +48,10 @@ class PlaybackPipelineTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val health = SourceHealthMonitor(Clock.System)
     private val registry = SourceRegistry(health)
-    private val primary = TestMusicSource(context, TestMusicSource.Variant.PRIMARY, durationScale = 0.1)
-    private val mirror = TestMusicSource(context, TestMusicSource.Variant.MIRROR, durationScale = 0.1)
+    // Keep the first generated track alive long enough for slower CI runners to observe READY
+    // before the player advances to ENDED; this test exercises queue edits, not short-duration playback.
+    private val primary = TestMusicSource(context, TestMusicSource.Variant.PRIMARY, durationScale = 0.2)
+    private val mirror = TestMusicSource(context, TestMusicSource.Variant.MIRROR, durationScale = 0.2)
     private val catalog = TrackCatalog(registry)
 
     private val deps = object : PlaybackDependencies {
