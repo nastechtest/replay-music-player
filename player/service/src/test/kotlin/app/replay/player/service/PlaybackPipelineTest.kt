@@ -80,8 +80,13 @@ class PlaybackPipelineTest {
 
     private fun t(title: String): Track = primary.allTracks().first { it.title == title }
 
-    private fun play(vararg titles: String) = runBlocking {
-        assertTrue(engine.playContext(titles.map { t(it).id }, 0, "Test", shuffle = false))
+    private fun play(vararg titles: String) {
+        runBlocking {
+            assertTrue(engine.playContext(titles.map { t(it).id }, 0, "Test", shuffle = false))
+        }
+        // Media3 schedules resolver callbacks on the Robolectric main looper. Drain them before
+        // the TestPlayerRunHelper starts observing state, otherwise CI can open q1 too early.
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     @Test
