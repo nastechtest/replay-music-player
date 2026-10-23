@@ -27,12 +27,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -81,12 +83,15 @@ class PlaybackPipelineTest {
     private fun t(title: String): Track = primary.allTracks().first { it.title == title }
 
     private fun play(vararg titles: String) {
-        runBlocking {
-            assertTrue(engine.playContext(titles.map { t(it).id }, 0, "Test", shuffle = false))
+        val result = CompletableFuture<Boolean>()
+        CoroutineScope(Dispatchers.Main.immediate).launch {
+            result.complete(engine.playContext(titles.map { t(it).id }, 0, "Test", shuffle = false))
         }
-        // Media3 schedules resolver callbacks on the Robolectric main looper. Drain them before
-        // the TestPlayerRunHelper starts observing state, otherwise CI can open q1 too early.
-        shadowOf(Looper.getMainLooper()).idle()
+        while (!result.isDone) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        assertTrue(result.get())
     }
 
     @Test

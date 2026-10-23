@@ -222,7 +222,10 @@ class TestMusicSource(
         override suspend fun resolve(track: Track, quality: QualityRequest, purpose: Purpose): FacetResolution {
             val spec = byKey[track.source.providerKey] ?: return FacetResolution.Miss(MissReason.NOT_FOUND)
             if (spec.behaviour == Behaviour.MISSING) return FacetResolution.Miss(MissReason.NOT_FOUND)
-            val file = withContext(Dispatchers.IO) { ensureAudio(spec) }
+            // Test playback is launched from the Robolectric main dispatcher. Generate the small
+            // synthetic fixture before returning so Media3 cannot open the queue item while q1 is
+            // still being prepared on a background thread in slower CI environments.
+            val file = ensureAudio(spec)
             val actualFormat = AudioQuality(Codec.PCM, container = "audio/wav", sampleRateHz = ToneSynth.SAMPLE_RATE, bitDepth = ToneSynth.BITS, channels = ToneSynth.CHANNELS)
             // This one deliberately over-claims, so the UI's honesty can be verified end to end.
             val claimed = if (spec.behaviour == Behaviour.CLAIMS_HIGH_RES) {
