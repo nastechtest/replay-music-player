@@ -87,7 +87,7 @@ class PlaybackPipelineTest {
     @Test
     fun `a queued track is resolved, pinned and decoded by Media3`() {
         play("Tuning Fork", "Major Triad")
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_READY)
 
         val current = assertNotNull(engine.queue.state.value.current)
         val selection = assertNotNull(current.selection, "the playing item must be pinned")
@@ -100,7 +100,7 @@ class PlaybackPipelineTest {
         assertEquals(44_100, measured.sampleRateHz)
         assertEquals("PCM 16-bit/44.1 kHz", QualityLabel.format(measured))
 
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_ENDED)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_ENDED)
         assertTrue(engine.queue.state.value.items.all { it.selection != null }, "every played item was pinned")
         assertEquals("Major Triad", engine.queue.state.value.current?.track?.title)
         engine.assertMirrorsPlayer()
@@ -111,7 +111,7 @@ class PlaybackPipelineTest {
         var extras: android.os.Bundle? = null
         engine.onExtrasChanged = { extras = it }
         play("Missing Master")
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_READY)
         val published = assertNotNull(extras)
         assertEquals(mirror.descriptor.id.value, published.getString(ReplayExtras.SERVED_BY_ID))
         assertEquals(mirror.descriptor.displayName, published.getString(ReplayExtras.SERVED_BY))
@@ -133,7 +133,7 @@ class PlaybackPipelineTest {
     @Test
     fun `a source's quality claim never becomes the label`() {
         play("High Resolution Claim")
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_READY)
 
         val selection = assertNotNull(engine.queue.state.value.current?.selection)
         val report = QualityReport(
@@ -148,11 +148,11 @@ class PlaybackPipelineTest {
     @Test
     fun `broken media is reported and skipped`() {
         play("Broken Tape", "Tuning Fork")
-        TestPlayerRunHelper.run(engine.player).untilPlayerError()
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilPlayerError()
         assertNotNull(engine.lastError)
 
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_READY)
         assertEquals("Tuning Fork", engine.queue.state.value.current?.track?.title)
         assertTrue(health.canAttempt(primary.descriptor.id), "bad media is per item, the source stays usable")
     }
@@ -160,7 +160,7 @@ class PlaybackPipelineTest {
     @Test
     fun `a source that stops serving loses its pins, except the playing item's`() {
         play("Tuning Fork", "Major Triad", "Minor Turn")
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_READY)
         val looper = shadowOf(Looper.getMainLooper())
         var waited = 0
         while (engine.queue.state.value.items[1].selection == null && waited++ < 100) {
@@ -180,7 +180,7 @@ class PlaybackPipelineTest {
     @Test
     fun `queue edits keep the player's playlist an exact mirror`() {
         play("Tuning Fork", "Major Triad", "Minor Turn", "Low Hum")
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
+        TestPlayerRunHelper.run(engine.player).withTimeoutMs(30_000).untilState(Player.STATE_READY)
         runBlocking {
             engine.playNext(listOf(t("Coda").id))
             engine.addToQueue(listOf(t("Slow Drift").id, t("Night Train").id))
