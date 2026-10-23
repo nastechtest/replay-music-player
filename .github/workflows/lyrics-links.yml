@@ -1,0 +1,60 @@
+name: Lyrics Link Smoke Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  lrclib-links:
+    name: Validate LRCLIB search links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        query:
+          - Never Gonna Give You Up Rick Astley
+          - Bohemian Rhapsody Queen
+          - Shape of You Ed Sheeran
+          - Take On Me a-ha
+
+    steps:
+      - name: Query LRCLIB
+        env:
+          QUERY: ${{ matrix.query }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --get 'https://lrclib.net/api/search' \
+            --data-urlencode "q=${QUERY}" \
+            --output response.json
+          test -s response.json
+
+      - name: Validate lyrics link response
+        env:
+          QUERY: ${{ matrix.query }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote
+
+          query = os.environ['QUERY']
+          with open('response.json', encoding='utf-8') as handle:
+              data = json.load(handle)
+          if not isinstance(data, list) or not data:
+              raise SystemExit(f'No LRCLIB results for {query!r}')
+          result = data[0]
+          for field in ('id', 'trackName', 'artistName'):
+              if not result.get(field):
+                  raise SystemExit(f'Missing {field} in LRCLIB result: {result!r}')
+          if not (result.get('plainLyrics') or result.get('syncedLyrics')):
+              raise SystemExit(f'No lyrics payload for {query!r}')
+          expected = 'https://lrclib.net/api/search?q=' + quote(query)
+          print(f'Validated {result["artistName"]} — {result["trackName"]}')
+          print(f'Link: {expected}')
+          PY

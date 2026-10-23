@@ -1,0 +1,94 @@
+name: Replay Quality Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: replay-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - { id: full-tests, name: Full Gradle test suite, command: './gradlew test --stacktrace' }
+          - { id: debug-tests, name: All Android debug unit tests, command: './gradlew testDebugUnitTest --stacktrace' }
+          - { id: lint, name: Android debug lint, command: './gradlew lintDebug --stacktrace' }
+          - { id: assemble-debug, name: Debug APK assembly, command: './gradlew :app:assembleDebug --stacktrace' }
+          - { id: assemble-release, name: Release APK assembly, command: './gradlew :app:assembleRelease --stacktrace' }
+          - { id: bundle-release, name: Release App Bundle assembly, command: './gradlew :app:bundleRelease --stacktrace' }
+          - { id: common, name: Core common tests, command: './gradlew :core:common:test --stacktrace' }
+          - { id: model, name: Core model tests, command: './gradlew :core:model:test --stacktrace' }
+          - { id: lyrics, name: Core lyrics tests, command: './gradlew :core:lyrics:test --stacktrace' }
+          - { id: interaction, name: Core interaction tests, command: './gradlew :core:interaction:test --stacktrace' }
+          - { id: database, name: Core database tests, command: './gradlew :core:database:testDebugUnitTest --stacktrace' }
+          - { id: designsystem, name: Core design system tests, command: './gradlew :core:designsystem:testDebugUnitTest --stacktrace' }
+          - { id: player-api, name: Player API tests, command: './gradlew :player:api:test --stacktrace' }
+          - { id: player-remote, name: Remote player tests, command: './gradlew :player:remote:testDebugUnitTest --stacktrace' }
+          - { id: player-service, name: Player service tests, command: './gradlew :player:service:testDebugUnitTest --stacktrace' }
+          - { id: sources-api, name: Sources API tests, command: './gradlew :sources:api:test --stacktrace' }
+          - { id: sources-local, name: Local source tests, command: './gradlew :sources:local:testDebugUnitTest --stacktrace' }
+          - { id: sources-youtube, name: YouTube Music source tests, command: './gradlew :sources:youtubemusic:test --stacktrace' }
+          - { id: sources-test, name: Test source fixtures, command: './gradlew :sources:test:testDebugUnitTest --stacktrace' }
+          - { id: library, name: Library feature tests, command: './gradlew :feature:library:testDebugUnitTest --stacktrace' }
+          - { id: now-playing, name: Now playing feature tests, command: './gradlew :feature:nowplaying:testDebugUnitTest --stacktrace' }
+          - { id: online, name: Online feature tests, command: './gradlew :feature:online:testDebugUnitTest --stacktrace' }
+          - { id: settings, name: Settings feature tests, command: './gradlew :feature:settings:testDebugUnitTest --stacktrace' }
+          - { id: app, name: App tests, command: './gradlew :app:testDebugUnitTest --stacktrace' }
+          - { id: newpipe, name: NewPipe POC tests, command: './gradlew :tools:newpipe-poc:testDebugUnitTest --stacktrace' }
+          - { id: ordering, name: Ordering and ranking contracts, command: './gradlew :sources:youtubemusic:test --tests "*AlbumRankingTest" --tests "*TrackMatcherTest" --stacktrace' }
+          - { id: lyrics-contracts, name: Lyrics parser and timing contracts, command: './gradlew :core:lyrics:test --tests "*LyricsTest" --tests "*LyricsFormatterTest" --tests "*LrclibProviderTest" --stacktrace' }
+          - { id: lyrics-links, name: Lyrics URL construction contracts, command: './gradlew :core:lyrics:test --tests "*LrclibProviderTest" --stacktrace' }
+          - { id: source-links, name: Source URL contracts, command: './gradlew :sources:youtubemusic:test --tests "*YouTubeMusicParserTest" --tests "*YouTubeMusicSourceTest" --stacktrace' }
+          - { id: fallback, name: Exact source fallback contracts, command: './gradlew :sources:api:test --tests "*MultiSourceFallbackTest" --tests "*StreamResolverTest" --stacktrace' }
+          - { id: room, name: Room schema and migration contracts, command: './gradlew :core:database:testDebugUnitTest --tests "*MigrationTest" --tests "*SchemaV5Test" --stacktrace' }
+          - { id: playback, name: Playback pipeline contracts, command: './gradlew :player:service:testDebugUnitTest --tests "*PlaybackPipelineTest" --tests "*CrossfadeTest" --stacktrace' }
+          - { id: manifest, name: Android manifest validation, command: 'xmllint --noout app/src/main/AndroidManifest.xml' }
+          - { id: workflows, name: GitHub workflow YAML validation, command: 'ruby -e "require \"yaml\"; Dir[\".github/workflows/*.{yml,yaml}\"].each { |f| YAML.load_file(f); puts f }"' }
+          - { id: gradle-wrapper, name: Gradle wrapper validation, command: './gradlew --version' }
+          - { id: branding, name: Replay branding guard, command: '! git grep -n -i -E "podium|com\\.podium|org\\.podium|app/podium" -- ":!third_party/licenses/*" ":!LICENSE"' }
+          - { id: resources, name: Replay resource guard, command: '! find app core feature player sources tools -type f -not -path "*/build/*" | grep -Ei "podium"' }
+          - { id: website, name: Website asset and branding guard, command: 'test -f site/index.html && test -f site/app.js && test -f site/styles.css && ! rg -n -i "podium" site' }
+          - { id: diff-check, name: Git whitespace and diff check, command: 'git diff --check' }
+          - { id: docs-links, name: Documentation link and name guard, command: '! rg -n -i "podium" README.md docs site 2>/dev/null' }
+          - { id: generated-icons, name: Launcher icon guard, command: 'test -f app/src/main/res/drawable/ic_launcher_foreground.xml && test -f app/src/main/res/drawable/ic_launcher_monochrome.xml && rg -q "Replay" app/src/main/res/drawable/ic_launcher_foreground.xml' }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
+      - name: Run ${{ matrix.name }}
+        shell: bash
+        run: ${{ matrix.command }}
