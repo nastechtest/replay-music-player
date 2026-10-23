@@ -44,3 +44,4 @@ jobs:
         run: |
           echo "Macrobenchmark build target successfully compiled."
           echo "For physical device runs or Firebase Test Lab execution, connect runner or invoke gcloud firebase test android run."
+
