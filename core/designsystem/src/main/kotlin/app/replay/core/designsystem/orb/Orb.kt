@@ -53,10 +53,13 @@ class OrbFrame {
 class OrbRenderer {
 
     private val shader: RuntimeShader? = if (Build.VERSION.SDK_INT >= 33) makeShader() else null
-    private val brush: ShaderBrush? = shader?.let { ShaderBrush(it) }
+    private val brush: ShaderBrush? = if (Build.VERSION.SDK_INT >= 33) makeBrush(shader) else null
 
     /** Whether this renderer draws with the shader (false: the gradient drawing). */
     val shaded: Boolean get() = shader != null
+
+    @RequiresApi(33)
+    private fun makeBrush(shader: RuntimeShader?): ShaderBrush? = shader?.let(::ShaderBrush)
 
     /** Draws the orb centred at [center] with outer radius [radius] (px). */
     fun draw(scope: DrawScope, center: Offset, radius: Float, frame: OrbFrame) {

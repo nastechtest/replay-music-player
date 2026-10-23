@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -17,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.replay.core.designsystem.component.LocalOverlayHost
 import app.replay.core.designsystem.component.LocalScreenInsets
 import app.replay.core.designsystem.component.OverlayHost
@@ -131,7 +133,9 @@ class AppearanceLayoutTest {
         val settings = Settings(appearance)
         shown = settings
         compose.setContent {
-            val a = settings.preview.value ?: settings.appearance.value
+            val preview by settings.preview.collectAsStateWithLifecycle()
+            val currentAppearance by settings.appearance.collectAsStateWithLifecycle()
+            val a = preview ?: currentAppearance
             ReplayTheme(darkTheme = true, displayTheme = a.display, display = a.screen) {
                 val palette = a.palette(ReplayTheme.colors.isDark)
                 CompositionLocalProvider(LocalInputRouter provides router, LocalOverlayHost provides OverlayHost()) {

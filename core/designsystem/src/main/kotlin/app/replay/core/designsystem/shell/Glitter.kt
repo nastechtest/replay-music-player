@@ -1,6 +1,7 @@
 package app.replay.core.designsystem.shell
 
 import android.content.Context
+import android.os.Build
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.ComposeShader
@@ -249,7 +250,7 @@ fun rememberDeviceTilt(enabled: Boolean): State<Offset?> {
 
 @Suppress("DEPRECATION")
 private fun displayRotation(context: Context): Int =
-    runCatching { context.display?.rotation }.getOrNull()
+    runCatching { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) context.display?.rotation else null }.getOrNull()
         ?: context.getSystemService(WindowManager::class.java)?.defaultDisplay?.rotation
         ?: Surface.ROTATION_0
 

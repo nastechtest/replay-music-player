@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun OnlineScreen(place: OnlinePlace, repository: OnlineRepository, actions: OnlineActions, navigate: (OnlinePlace) -> Unit, back: () -> Unit) {
+    val status by repository.status.collectAsStateWithLifecycle()
     TrackPlaylists(repository)
     when (place) {
         OnlinePlace.Menu -> OnlineMenuScreen(repository, actions, navigate)
@@ -43,7 +44,7 @@ fun OnlineScreen(place: OnlinePlace, repository: OnlineRepository, actions: Onli
         OnlinePlace.Radio -> OnlineRadioScreen(repository, actions)
         OnlinePlace.LiveRadio -> OnlineLiveRadioScreen(repository, navigate)
         is OnlinePlace.LiveGenre -> OnlineLiveGenreScreen(place.name, repository, actions, navigate)
-        OnlinePlace.History -> if (repository.status.value?.canHistory == true) OnlineAccountHistoryScreen(repository, actions, navigate) else OnlineHistoryScreen(repository, actions, navigate)
+        OnlinePlace.History -> if (status?.canHistory == true) OnlineAccountHistoryScreen(repository, actions, navigate) else OnlineHistoryScreen(repository, actions, navigate)
         OnlinePlace.Recent -> OnlineHistoryScreen(repository, actions, navigate)
         OnlinePlace.Library -> OnlineLibraryScreen(repository, actions, navigate)
         OnlinePlace.LibraryPlaylists -> OnlineLibraryPlaylistsScreen(repository, navigate)
