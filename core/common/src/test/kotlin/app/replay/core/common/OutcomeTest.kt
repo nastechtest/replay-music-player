@@ -24,11 +24,10 @@ class OutcomeTest {
     fun `failure preserves error on map and returns null for getOrNull`() {
         val error = ReplayError.NotFound("album")
         val failure: Outcome<String> = Outcome.failure(error)
+        val mapped = failure.map { it.length }
         assertTrue(failure is Outcome.Failure)
         assertEquals(error, failure.error)
         assertNull(failure.getOrNull())
-
-        val mapped = failure.map { it.length }
         assertTrue(mapped is Outcome.Failure)
         assertEquals(error, mapped.error)
     }

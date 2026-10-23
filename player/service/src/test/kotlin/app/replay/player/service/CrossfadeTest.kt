@@ -102,7 +102,7 @@ class CrossfadeTest {
         effects.value = AudioEffects(crossfadeSeconds = 2)
         val reasons = transitions()
         play("Tuning Fork", "Coda") // different albums: they crossfade
-        RobolectricUtil.runMainLooperUntil({ engine.player.currentMediaItemIndex == 1 }, 60_000, clock)
+        RobolectricUtil.runMainLooperUntil({ engine.player.currentMediaItemIndex == 1 && helpers.isNotEmpty() }, 60_000, clock)
         // The engine moved on before the first song's end, carrying its tail in the second player.
         assertEquals(listOf(Player.MEDIA_ITEM_TRANSITION_REASON_SEEK), reasons.filter { it != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED })
         val helper = assertNotNull(helpers.singleOrNull(), "one second player")

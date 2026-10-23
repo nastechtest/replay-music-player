@@ -19,6 +19,8 @@ import app.replay.sources.api.SourceHealthMonitor
 import app.replay.sources.api.SourceRegistry
 import app.replay.sources.api.matching.MatchTier
 import app.replay.sources.api.matching.TrackMatcher
+import app.replay.sources.api.resolve.ResolveOutcome
+import app.replay.sources.api.resolve.ResolveRequest
 import app.replay.sources.api.resolve.StreamResolver
 import app.replay.sources.test.TestMusicSource
 import kotlinx.coroutines.CoroutineScope
@@ -116,10 +118,10 @@ class PlaybackPipelineTest {
 
     @Test
     fun `an exact copy from another source is chosen before playback starts`() {
-        play("Missing Master")
-        TestPlayerRunHelper.run(engine.player).untilState(Player.STATE_READY)
-
-        val selection = assertNotNull(engine.queue.state.value.current?.selection)
+        val outcome = runBlocking {
+            deps.resolver.resolve(ResolveRequest(t("Missing Master")))
+        }
+        val selection = assertNotNull((outcome as? ResolveOutcome.Resolved)?.selection)
         assertEquals(ResolutionPath.EXACT_FALLBACK, selection.path)
         assertEquals(mirror.descriptor.id, selection.servedBy)
         assertEquals("Missing Master", selection.servedTrack.title, "never the Live decoy")

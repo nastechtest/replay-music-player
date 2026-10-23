@@ -1,11 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The mark for themed icons: the same "P", one flat colour (the launcher tints it). -->
+<!-- Replay monogram for themed icons. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M33.18 73V35H63.72Q67.48 35 70.35 36.68Q73.22 38.37 74.82 41.38Q76.42 44.39 76.42 48.31Q76.42 52.34 74.79 55.38Q73.16 58.42 70.29 60.08Q67.42 61.73 63.72 61.73H46.82V73ZM46.82 52.29H59.91Q62.01 52.29 63.03 51.29Q64.05 50.3 64.05 48.37Q64.05 47.04 63.58 46.18Q63.11 45.33 62.2 44.89Q61.29 44.44 59.91 44.44H46.82Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M31,76V32h30.5c8.8,0 15.1,5.3 15.1,13.5 0,6.1 -3.3,10.4 -8.6,12.3L78,76H64.5L55.9,60.1H43V76H31ZM43,50.2h17.1c3.2,0 5.2,-1.5 5.2,-4.4 0,-2.8 -2,-4.3 -5.2,-4.3H43v8.7ZM55.5,60.1l20.2,15.5 -7.3,0 -19.2,-15.5z" />
 </vector>

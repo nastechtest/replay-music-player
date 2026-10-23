@@ -1,6 +1,7 @@
 package app.replay.poc
 
 import org.junit.Test
+import org.junit.Assume.assumeTrue
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -27,6 +28,7 @@ class PocExtractionTest {
 
     @Test
     fun test3_and_4_extraction() {
+        assumeTrue("Live YouTube extraction is opt-in: -Dreplay.liveNetworkTests=true", liveNetworkTestsEnabled())
         val result = PocExtractor.extract("kJQP7kiw5Fk")
         assertNotNull(result.id)
         assertNotNull(result.title)
@@ -60,6 +62,7 @@ class PocExtractionTest {
 
     @Test
     fun test_diverse_catalog_tracks() {
+        assumeTrue("Live YouTube extraction is opt-in: -Dreplay.liveNetworkTests=true", liveNetworkTestsEnabled())
         val tracks = listOf(
             "fJ9rUzIMcZQ" to "Queen - Bohemian Rhapsody",
             "JGwWNGJdvx8" to "Ed Sheeran - Shape of You",
@@ -87,4 +90,7 @@ class PocExtractionTest {
             }
         }
     }
+
+    private fun liveNetworkTestsEnabled(): Boolean =
+        System.getProperty("replay.liveNetworkTests")?.equals("true", ignoreCase = true) == true
 }
