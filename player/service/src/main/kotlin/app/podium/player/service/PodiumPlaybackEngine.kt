@@ -1,0 +1,665 @@
+@file:OptIn(UnstableApi::class)
+
+package app.replay.player.service
+
+import android.content.Context
+import android.net.Uri
+import android.os.Bundle
+import android.util.Log
+import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
+import app.replay.core.common.Outcome
+import app.replay.core.common.ReplayError
+import app.replay.core.model.QueueUid
+import app.replay.core.model.TrackId
+import app.replay.player.api.AutoplayEngine
+import app.replay.player.api.PlayContext
+import app.replay.player.api.QueueItemResolver
+import app.replay.player.api.QueueManager
+import app.replay.player.api.QueueOp
+import app.replay.player.api.QueueOrigin
+import app.replay.player.api.RecommendationRequest
+import app.replay.player.api.RepeatMode
+import app.replay.player.api.persistedShape
+import app.replay.sources.api.AuthState
+import app.replay.sources.api.HealthOutcome
+import app.replay.sources.api.NetworkPolicy
+import app.replay.sources.api.PlaybackTarget
+import app.replay.sources.api.Purpose
+import app.replay.sources.api.resolve.ResolveOutcome
+import app.replay.sources.api.resolve.Selection
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Owns ExoPlayer and keeps it a mirror of the [QueueManager] (ADR-006).
+ *
+ * - Queue mutations come in as commands, go through the QueueManager (single writer), and the
+ *   resulting [QueueOp]s are applied to the player.
+ * - Each item is resolved through the [QueueItemResolver] **before** it opens (pre-resolution on
+ *   transition, or on demand from the loader thread) and pinned. A playing item is never switched
+ *   to another source (D-18).
+ * - Only DirectStream targets are played here; other routes belong to other engines (S5).
+ *
+ * Must be used from the application (main) thread, except [resolveForLoader].
+ */
+class ReplayPlaybackEngine(
+    context: Context,
+    private val deps: PlaybackDependencies,
+    /** Builds crossfade's second player (tests inject their own); by default like the first, without audio focus. */
+    private val helperFactory: ((Context, MediaSource.Factory) -> ExoPlayer)? = null,
+    /** Builds the player around the engine's resolving media-source factory (tests inject their own). Last, for a trailing lambda. */
+    playerFactory: ((Context, MediaSource.Factory) -> ExoPlayer)? = null,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val queue = QueueManager()
+    private val itemResolver = QueueItemResolver(queue, deps.resolver)
+    private val inFlight = ConcurrentHashMap<QueueUid, Deferred<ResolveOutcome>>()
+    private var consecutiveErrors = 0
+
+    // Declared before init: the watchers started there run immediately (main dispatcher).
+    private val autoplay = AutoplayEngine(
+        // Suggestions may come from any source of the current song's environment, never another (D-34, D-35).
+        sameEnvironment = { a, b ->
+            val environment = deps.registry.get(a)?.descriptor?.environment
+            environment != null && environment == deps.registry.get(b)?.descriptor?.environment
+        },
+        equivalents = { deps.equivalence?.exactEquivalents(it).orEmpty() },
+    )
+    private var autoplayJob: Job? = null
+    private var positionJob: Job? = null
+    private var skipJob: Job? = null
+
+    /** Invoked whenever session extras (current resolution, errors) change. */
+    var onExtrasChanged: (Bundle) -> Unit = {}
+
+    var lastError: ReplayError? = null
+        private set
+
+    private val mediaSourceFactory: MediaSource.Factory =
+        DefaultMediaSourceFactory(ResolvingDataSource.Factory(DefaultDataSource.Factory(context), QueueDataSpecResolver()))
+
+    /** Settings ▸ Equaliser (D-76), in each player's own audio path. */
+    private val equalizer = EqualizerProcessor()
+    private var helperEqualizer: EqualizerProcessor? = null
+
+    /** Settings ▸ Equaliser ▸ Effect (D-89), likewise in each player's path. */
+    private val sound = SoundEffectProcessor().also { it.update(deps.effects.value.sound) }
+    private var helperSound: SoundEffectProcessor? = null
+
+    val player: ExoPlayer = playerFactory?.invoke(context, mediaSourceFactory) ?: buildPlayer(context)
+
+    private fun buildPlayer(context: Context): ExoPlayer {
+        return ExoPlayer.Builder(context, EffectsRenderersFactory(context, equalizer, sound, deps.audioMeter))
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .build()
+    }
+
+    /**
+     * Crossfade's second player (D-77): the same media and equaliser, silent until it carries the
+     * end of a song. It never takes audio focus or the session; the engine's [player] keeps both.
+     */
+    private fun buildHelper(context: Context): ExoPlayer = (helperFactory?.invoke(context, mediaSourceFactory)
+        ?: ExoPlayer.Builder(
+            context,
+            EffectsRenderersFactory(
+                context,
+                EqualizerProcessor().also { eq -> eq.update(deps.effects.value.equalizer); helperEqualizer = eq },
+                SoundEffectProcessor().also { fx -> fx.update(deps.effects.value.sound); helperSound = fx },
+            ),
+        )
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(
+                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
+                /* handleAudioFocus = */ false,
+            )
+            .build())
+
+    // The player's volume is the sleep timer's share times crossfade's (D-75, D-77); never the phone's volume.
+    private var sleepShare = 1f
+    private var fadeShare = 1f
+    private var helperShare = 0f
+
+    private fun applyVolumes() {
+        player.volume = sleepShare * fadeShare
+        crossfader.helperPlayer?.volume = sleepShare * helperShare
+    }
+
+    private val crossfader: Crossfader = Crossfader(
+        main = player,
+        newHelper = { buildHelper(context) },
+        songAt = ::crossfadeSong,
+        setMainShare = { share ->
+            fadeShare = share
+            applyVolumes()
+        },
+        setHelperShare = { helper, share ->
+            helperShare = share
+            helper.volume = sleepShare * share
+        },
+        scope = scope,
+        blocked = { player.pauseAtEndOfMediaItems },
+    )
+
+    /** What crossfade's rules need of the song at a position in the player's playlist. */
+    private fun crossfadeSong(index: Int): app.replay.player.api.CrossfadeRules.Song? {
+        if (index !in 0 until player.mediaItemCount) return null
+        val uid = QueueUid(player.getMediaItemAt(index).mediaId)
+        val track = queue.state.value.items.firstOrNull { it.uid == uid }?.track ?: return null
+        // A live station has no end to fade from: the player's "duration" is only its rewind window (D-90).
+        if (track.kind == app.replay.core.model.MediaKind.LIVE) return app.replay.player.api.CrossfadeRules.Song(null, null, null)
+        val duration = track.durationMs ?: player.duration.takeIf { index == player.currentMediaItemIndex && it != C.TIME_UNSET && it > 0 }
+        return app.replay.player.api.CrossfadeRules.Song(track.album?.id?.value, track.trackNumber, duration)
+    }
+
+    init {
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val uid = mediaItem?.mediaId?.let(::QueueUid) ?: return
+                queue.onCurrentChanged(uid)
+                preResolveAround(uid)
+                publishExtras()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    consecutiveErrors = 0
+                    refreshedAfterError.clear()
+                    if (recovery != null) {
+                        recovery = null
+                        publishExtras()
+                    }
+                    if (lastError != null) {
+                        lastError = null
+                        publishExtras()
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) = handleError(error)
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) keepPositionSaved() else savePosition()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                val timer = deps.sleepTimer ?: return
+                if (playWhenReady) {
+                    timer.resumed()
+                } else if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && player.pauseAtEndOfMediaItems) {
+                    // Paused where the sleep timer asked: at the end of the song or the album.
+                    player.pauseAtEndOfMediaItems = false
+                    timer.endReached()
+                }
+            }
+        })
+        restoreSavedQueue()
+        saveQueueChanges()
+        keepOnlineMusicGoing()
+        forgetStreamsOfSourcesThatStop()
+        followEffects()
+        followSleepTimer()
+    }
+
+    // --- Equaliser and crossfade (D-76, D-77) -------------------------------------------------------
+
+    private fun followEffects() {
+        scope.launch {
+            deps.effects.collect { effects ->
+                equalizer.update(effects.equalizer)
+                helperEqualizer?.update(effects.equalizer)
+                sound.update(effects.sound)
+                helperSound?.update(effects.sound)
+                crossfader.seconds = effects.crossfadeSeconds
+            }
+        }
+    }
+
+    // --- Sleep timer (D-75) -------------------------------------------------------------------------
+
+    /**
+     * The timer's fade is the player's own volume; when it runs out the player pauses (in silence,
+     * the volume stays down until the music plays again). The end of a song or an album is the
+     * player's own pause at the end of an item, set only for the song that ends it.
+     */
+    private fun followSleepTimer() {
+        val timer = deps.sleepTimer ?: return
+        scope.launch {
+            timer.volume.collect { v ->
+                sleepShare = v
+                applyVolumes()
+            }
+        }
+        scope.launch {
+            timer.expired.collect {
+                crossfader.stop()
+                player.pause()
+            }
+        }
+        scope.launch {
+            combine(timer.state, queue.state) { state, q -> state to q }.collect { (state, q) ->
+                player.pauseAtEndOfMediaItems = when (state) {
+                    app.replay.player.api.SleepTimerState.EndOfSong -> true
+                    app.replay.player.api.SleepTimerState.EndOfAlbum -> {
+                        // Only the album's last song (the next one is another album's, or none).
+                        val current = q.current?.track
+                        val next = q.items.getOrNull(q.currentIndex + 1)?.track
+                        current != null && (next == null || current.album?.id == null || next.album?.id != current.album?.id)
+                    }
+                    else -> false
+                }
+            }
+        }
+    }
+
+    // --- Sources that stop serving -------------------------------------------------------------------
+
+    /**
+     * A source that stops serving — turned off, signed out, removed — takes its resolved streams
+     * with it: queued items it served lose their pins and resolve afresh before they play (a pinned
+     * URL can carry that source's sign-in). The item playing keeps its pin: audio never changes
+     * source mid-track (D-18).
+     */
+    private fun forgetStreamsOfSourcesThatStop() {
+        scope.launch {
+            deps.registry.connectedSources
+                .map { all -> all.filter { it.enabled && it.authenticationState.serves() }.mapTo(HashSet()) { it.sourceId } }
+                .distinctUntilChanged()
+                .collect { serving ->
+                    val state = queue.state.value
+                    state.items
+                        .filter { it.uid != state.current?.uid && it.selection?.servedBy?.let { s -> s !in serving } == true }
+                        .forEach { queue.unpin(it.uid) }
+                }
+        }
+    }
+
+    private fun AuthState.serves() = this !is AuthState.SignedOut && this !is AuthState.Rejected && this !is AuthState.Expired
+
+    // --- Autoplay (D-34) -------------------------------------------------------------------------------
+
+    /**
+     * When an online song is playing and the queue is about to run out, ask that song's source for
+     * more (never another source, never local music) and append what passes the autoplay rules.
+     */
+    private fun keepOnlineMusicGoing() {
+        val engine = deps.recommendations ?: return
+        scope.launch {
+            combine(queue.state, deps.autoplay) { state, _ -> state }
+                .collect { state ->
+                    // Always the latest settings, even if the queue changed first.
+                    val settings = deps.autoplay.value
+                    if (autoplayJob?.isActive == true || !autoplay.needsMore(state, settings)) return@collect
+                    val current = state.current?.track ?: return@collect
+                    val environment = deps.registry.get(current.source.sourceId)?.descriptor?.environment
+                    if (environment != app.replay.sources.api.MusicEnvironment.ONLINE) return@collect
+                    autoplayJob = scope.launch {
+                        val recent = if (settings.avoidRepeats) deps.playedSince(deps.clock.nowMillis() - RECENT_WINDOW_MS) else emptySet()
+                        val request = RecommendationRequest(autoplay.seeds(state), autoplay.exclusions(state, recent, settings), AutoplayEngine.BATCH * 2)
+                        val candidates = runCatching { engine.recommend(request) }.onFailure { Log.w(TAG, "autoplay failed", it) }.getOrDefault(emptyList())
+                        val latest = queue.state.value
+                        val picked = autoplay.pick(candidates, latest, recent, settings)
+                        if (picked.isNotEmpty() && latest.current?.track?.id == current.id) {
+                            deps.catalog.remember(picked)
+                            apply(queue.appendAutoplay(picked))
+                            Log.d(TAG, "autoplay added ${picked.size}")
+                        }
+                    }
+                }
+        }
+    }
+
+    // --- Across runs (D-31) ------------------------------------------------------------------------
+
+
+    /**
+     * Bring back the queue from the last run, paused where it stopped. The player isn't prepared,
+     * so nothing is opened or buffered until the listener presses play (the session prepares on
+     * play). A command that arrives first wins; the restore then does nothing.
+     */
+    private fun restoreSavedQueue() {
+        val store = deps.queueStore ?: return
+        scope.launch {
+            val saved = runCatching { store.load() }.onFailure { Log.w(TAG, "could not load the saved queue", it) }.getOrNull() ?: return@launch
+            val ops = queue.restore(saved)
+            if (ops.isEmpty()) return@launch
+            deps.catalog.remember(saved.items.map { it.track })
+            apply(ops)
+            player.seekTo(saved.currentIndex, saved.positionMs)
+            setRepeat(saved.repeatMode)
+            Log.d(TAG, "restored ${saved.items.size} queued songs")
+        }
+    }
+
+    /** Save the queue whenever its contents, order, current song or modes change (not on pins). */
+    @OptIn(FlowPreview::class)
+    private fun saveQueueChanges() {
+        val store = deps.queueStore ?: return
+        scope.launch {
+            queue.state
+                .distinctUntilChangedBy { it.persistedShape }
+                .drop(1) // the empty queue a fresh engine starts with isn't news
+                .debounce(SAVE_DEBOUNCE_MS)
+                .collect { state ->
+                    runCatching { store.save(state, player.currentPosition) }.onFailure { Log.w(TAG, "could not save the queue", it) }
+                }
+        }
+    }
+
+    private fun savePosition() {
+        val store = deps.queueStore ?: return
+        positionJob?.cancel()
+        val index = queue.state.value.currentIndex.takeIf { it >= 0 } ?: return
+        val position = player.currentPosition
+        scope.launch { runCatching { store.savePosition(index, position) } }
+    }
+
+    private fun keepPositionSaved() {
+        if (deps.queueStore == null) return
+        positionJob?.cancel()
+        positionJob = scope.launch {
+            while (isActive) {
+                delay(POSITION_SAVE_INTERVAL_MS)
+                savePosition()
+            }
+        }
+    }
+
+    // --- Commands ----------------------------------------------------------------------------------
+
+    suspend fun playContext(trackIds: List<TrackId>, startIndex: Int, label: String?, shuffle: Boolean, radio: Boolean = false): Boolean {
+        val tracks = trackIds.mapNotNull { (deps.catalog.get(it) as? Outcome.Success)?.value }
+        if (tracks.isEmpty()) return false
+        val start = startIndex.coerceIn(0, tracks.lastIndex)
+        apply(queue.setContext(tracks, start, label?.let(::PlayContext), shuffle, origin = if (radio) QueueOrigin.RADIO else QueueOrigin.CONTEXT))
+        player.shuffleModeEnabled = false
+        player.prepare()
+        player.play()
+        return true
+    }
+
+    suspend fun playNext(trackIds: List<TrackId>) = mutateWithTracks(trackIds) { queue.playNext(it) }
+
+    suspend fun addToQueue(trackIds: List<TrackId>) = mutateWithTracks(trackIds) { queue.addToQueue(it) }
+
+    private suspend fun mutateWithTracks(
+        trackIds: List<TrackId>,
+        block: (List<app.replay.core.model.Track>) -> List<QueueOp>,
+    ): Boolean {
+        val tracks = trackIds.mapNotNull { (deps.catalog.get(it) as? Outcome.Success)?.value }
+        if (tracks.isEmpty()) return false
+        val wasEmpty = queue.state.value.isEmpty
+        apply(block(tracks))
+        if (wasEmpty) {
+            player.prepare()
+            player.play()
+        }
+        queue.state.value.current?.let { preResolveAround(it.uid) }
+        return true
+    }
+
+    fun move(uid: QueueUid, toIndex: Int) = apply(queue.move(uid, toIndex))
+
+    fun remove(uids: Set<QueueUid>) = apply(queue.remove(uids))
+
+    fun skipTo(uid: QueueUid) {
+        apply(queue.skipTo(uid))
+        player.playWhenReady = true
+    }
+
+    fun clearUpcoming() = apply(queue.clearUpcoming())
+
+    fun setShuffle(enabled: Boolean) = apply(queue.setShuffle(enabled))
+
+    fun setRepeat(mode: RepeatMode) {
+        queue.setRepeat(mode)
+        player.repeatMode = when (mode) {
+            RepeatMode.OFF -> Player.REPEAT_MODE_OFF
+            RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+            RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+        }
+    }
+
+    /** Apply queue operations to the player so its playlist mirrors the queue exactly. */
+    private fun apply(ops: List<QueueOp>) {
+        for (op in ops) when (op) {
+            is QueueOp.ReplaceAll -> player.setMediaItems(op.items.map(QueueMediaItems::toMediaItem), op.startIndex, 0L)
+            is QueueOp.Insert -> player.addMediaItems(op.index, op.items.map(QueueMediaItems::toMediaItem))
+            is QueueOp.Remove -> player.removeMediaItems(op.index, op.index + op.count)
+            is QueueOp.Move -> player.moveMediaItem(op.from, op.to)
+            is QueueOp.ReplaceRange -> player.replaceMediaItems(op.from, op.toExclusive, op.items.map(QueueMediaItems::toMediaItem))
+            is QueueOp.SeekTo -> player.seekTo(op.index, 0L)
+        }
+        if (BuildConfigFlags.checkMirror) assertMirrorsPlayer()
+        queue.state.value.current?.let { preResolveAround(it.uid) }
+        publishExtras()
+    }
+
+    /** Debug invariant: the player's playlist is exactly the queue, in order. */
+    fun assertMirrorsPlayer() {
+        val queueIds = queue.state.value.items.map { it.uid.value }
+        val playerIds = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+        check(queueIds == playerIds) { "Queue and player diverged: $queueIds vs $playerIds" }
+    }
+
+    // --- Resolution ----------------------------------------------------------------------------------
+
+    /** Resolve the current item and the next one before they open, so fallbacks happen before playback. */
+    private fun preResolveAround(uid: QueueUid) {
+        startResolve(uid)
+        val items = queue.state.value.items
+        val index = items.indexOfFirst { it.uid == uid }
+        items.getOrNull(index + 1)?.let { startResolve(it.uid) }
+    }
+
+    private fun startResolve(uid: QueueUid): Deferred<ResolveOutcome> {
+        inFlight[uid]?.let { if (it.isActive) return it }
+        val item = queue.item(uid)
+        if (item?.selection != null && item.selection!!.isUsableAt(deps.clock.nowMillis())) {
+            return CompletableDeferred(
+                ResolveOutcome.Resolved(item.selection!!, reused = true, attempts = emptyList()),
+            )
+        }
+        val deferred = CompletableDeferred<ResolveOutcome>()
+        inFlight[uid] = deferred
+        scope.launch {
+            val outcome = runCatching { itemResolver.resolve(uid, Purpose.PLAYBACK) }
+                .getOrElse { ResolveOutcome.Failed(app.replay.sources.api.HealthOutcome.UNKNOWN, it.message, emptyList()) }
+            if (outcome is ResolveOutcome.Resolved) {
+                Log.d(TAG, "resolved $uid via ${outcome.selection.path} from ${outcome.selection.servedBy}")
+            } else {
+                Log.w(TAG, "could not resolve $uid: $outcome")
+            }
+            deferred.complete(outcome)
+            inFlight.remove(uid, deferred)
+            if (uid == queue.state.value.current?.uid) publishExtras()
+        }
+        return deferred
+    }
+
+    /**
+     * Called on ExoPlayer's loader thread. Returns the pinned selection, waiting for an in-flight
+     * resolution (started on the main thread) if needed. Never resolves on this thread itself.
+     */
+    internal fun resolveForLoader(uid: QueueUid): Selection {
+        queue.item(uid)?.selection?.takeIf { it.isUsableAt(deps.clock.nowMillis()) }?.let { return it }
+        val started = CompletableDeferred<Deferred<ResolveOutcome>>()
+        scope.launch { started.complete(startResolve(uid)) }
+        val outcome = runBlocking {
+            withTimeoutOrNull(RESOLVE_TIMEOUT_MS) { started.await().await() }
+        } ?: throw ReplayResolveException(app.replay.sources.api.HealthOutcome.NETWORK_FAILURE, "Timed out resolving $uid")
+        return when (outcome) {
+            is ResolveOutcome.Resolved -> outcome.selection
+            is ResolveOutcome.Miss -> throw ReplayResolveException(null, "No playable copy for $uid (${outcome.reason})")
+            is ResolveOutcome.Failed -> throw ReplayResolveException(outcome.outcome, "Resolution failed for $uid")
+        }
+    }
+
+    private inner class QueueDataSpecResolver : ResolvingDataSource.Resolver {
+        override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
+            val uid = QueueMediaItems.uidOf(dataSpec.uri) ?: return dataSpec
+            val selection = resolveForLoader(uid)
+            val target = selection.target as? PlaybackTarget.DirectStream
+                ?: throw ReplayResolveException(null, "Route ${selection.target::class.simpleName} needs another engine")
+            // The platform allows cleartext only so the listener's own server can be reached; every
+            // source is held to that here, whatever it hands over (D-09). A per-item refusal.
+            if (!NetworkPolicy.permits(target.media.uri)) {
+                throw ReplayResolveException(HealthOutcome.INVALID_MEDIA, "Refused an unencrypted stream off the listener's network")
+            }
+            return dataSpec.withUri(Uri.parse(target.media.uri)).withAdditionalHeaders(target.media.headers)
+        }
+    }
+
+    // --- Errors ------------------------------------------------------------------------------------------
+
+    /**
+     * Classify, record source health for the source that served the item, then skip after a short
+     * pause (SkipAfter). Three consecutive failures halt instead of skipping through the whole queue.
+     */
+    private fun handleError(error: PlaybackException) {
+        val current = queue.state.value.current
+        val refused = PlaybackErrors.isRefusedStream(error) && current?.selection?.media != null
+        // A stream URL that's refused (expired after a long pause, revoked) is asked for afresh from
+        // the same source, once, and playback carries on where it was (D-18: same source, same copy).
+        if (refused && current != null && refreshedAfterError.add(current.uid)) {
+            recovery = app.replay.player.api.Recovery.REFRESHING_STREAM
+            publishExtras()
+            refreshAndResume(current.uid, player.currentPosition)
+            return
+        }
+        // A refused stream says nothing about the listener's account: it's this song, not a sign-in.
+        val classified = if (refused) ReplayError.NotPlayable("stream refused") else PlaybackErrors.classify(error)
+        lastError = classified
+        val outcome = if (refused) HealthOutcome.INVALID_MEDIA else PlaybackErrors.healthOutcomeOf(classified)
+        current?.selection?.servedBy?.let { deps.health.record(it, outcome) }
+        consecutiveErrors++
+        publishExtras()
+        Log.w(TAG, "playback error on ${current?.uid}: $classified (${error.errorCodeName})")
+        skipJob?.cancel()
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS || !player.hasNextMediaItem()) {
+            recovery = null
+            publishExtras()
+            return
+        }
+        recovery = app.replay.player.api.Recovery.SKIPPING
+        publishExtras()
+        skipJob = scope.launch {
+            delay(SKIP_AFTER_MS)
+            recovery = null
+            player.seekToNextMediaItem()
+            player.prepare()
+            player.playWhenReady = true
+        }
+    }
+
+    /** Items whose refused stream was asked for afresh; cleared once playback is going again. */
+    private val refreshedAfterError = HashSet<QueueUid>()
+
+    /** What the engine is doing about the current song's problem, for the session (and Now Playing). */
+    private var recovery: app.replay.player.api.Recovery? = null
+
+    private fun refreshAndResume(uid: QueueUid, positionMs: Long) {
+        scope.launch {
+            val outcome = runCatching { itemResolver.refreshPinned(uid) }
+                .getOrElse { ResolveOutcome.Failed(HealthOutcome.UNKNOWN, it.javaClass.simpleName, emptyList()) }
+            if (queue.state.value.current?.uid != uid) return@launch // the listener moved on meanwhile
+            if (outcome is ResolveOutcome.Resolved) {
+                Log.d(TAG, "a fresh stream for $uid after the last was refused; resuming at ${positionMs}ms")
+                player.seekTo(player.currentMediaItemIndex, positionMs)
+                player.prepare() // keeps the listener's play/pause intent
+            } else {
+                Log.w(TAG, "no fresh stream for $uid: $outcome")
+                player.playerError?.let(::handleError) ?: handleError(
+                    PlaybackException("stream refused", null, PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS),
+                )
+            }
+        }
+    }
+
+    // --- Session extras: who serves the current item, and how ----------------------------------------
+
+    private fun publishExtras() {
+        val current = queue.state.value.current
+        val selection = current?.selection
+        val claimed = selection?.media?.claimedQuality
+        val extras = Bundle().apply {
+            putString(ReplayExtras.CURRENT_UID, current?.uid?.value)
+            putString(ReplayExtras.SERVED_BY, selection?.servedBy?.let { deps.registry.get(it)?.descriptor?.displayName })
+            putString(ReplayExtras.SERVED_BY_ID, selection?.servedBy?.value)
+            putString(ReplayExtras.RESOLUTION_PATH, selection?.path?.name)
+            putString(ReplayExtras.CLAIMED_CODEC, claimed?.codec?.name)
+            claimed?.bitrateKbps?.let { putInt(ReplayExtras.CLAIMED_BITRATE, it) }
+            claimed?.sampleRateHz?.let { putInt(ReplayExtras.CLAIMED_SAMPLE_RATE, it) }
+            claimed?.bitDepth?.let { putInt(ReplayExtras.CLAIMED_BIT_DEPTH, it) }
+            putString(ReplayExtras.CONTEXT_LABEL, queue.state.value.context?.label)
+            putString(ReplayExtras.LAST_ERROR, lastError?.let { it::class.simpleName })
+            putString(ReplayExtras.RECOVERY, recovery?.name)
+        }
+        onExtrasChanged(extras)
+    }
+
+    fun release() {
+        // The last word on where playback stood; brief, and only when the service goes away.
+        deps.queueStore?.let { store ->
+            val index = queue.state.value.currentIndex
+            if (index >= 0) runBlocking { withTimeoutOrNull(500) { runCatching { store.savePosition(index, player.currentPosition) } } }
+        }
+        scope.cancel()
+        crossfader.release()
+        player.release()
+    }
+
+    companion object {
+        private const val TAG = "ReplayEngine"
+        /** Longer than any source's own resolve budget (PlaybackFacet.resolveTimeoutMillis), so the source decides. */
+        private const val RESOLVE_TIMEOUT_MS = 25_000L
+        private const val SKIP_AFTER_MS = 1_500L
+        private const val MAX_CONSECUTIVE_ERRORS = 3
+        private const val SAVE_DEBOUNCE_MS = 750L
+        private const val POSITION_SAVE_INTERVAL_MS = 10_000L
+        private const val RECENT_WINDOW_MS = 6 * 60 * 60 * 1000L
+    }
+}
+
+/** Debug-time invariant checks; flipped off for release by the app. */
+object BuildConfigFlags {
+    @Volatile var checkMirror: Boolean = true
+}

@@ -1,0 +1,122 @@
+package app.replay.core.designsystem.component
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.dp
+import app.replay.core.designsystem.glass.GlassMaterial
+import app.replay.core.designsystem.glass.glass
+import app.replay.core.designsystem.theme.ReplayMotion
+import app.replay.core.designsystem.theme.ReplayTheme
+import app.replay.core.interaction.FocusListState
+import app.replay.core.interaction.InputTargetEffect
+import app.replay.core.interaction.ReplayInput
+import app.replay.core.interaction.WheelButton
+import app.replay.core.interaction.WheelContext
+import app.replay.core.interaction.rememberReplayHaptics
+
+@Immutable
+data class MenuAction(val label: String, val enabled: Boolean = true, val onSelect: () -> Unit)
+
+@Immutable
+data class MenuSpec(val title: String?, val actions: List<MenuAction>)
+
+/**
+ * A context menu (design-system.md §6.9): glass, in the functional layer, driven by the Wheel like
+ * any list. Menu dismisses; Center chooses.
+ */
+@Composable
+fun GlassMenu(
+    spec: MenuSpec,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** Keeps the panel clear of the Wheel, which stays live (and above the scrim) while a menu is open. */
+    panelPadding: PaddingValues = PaddingValues(0.dp),
+) {
+    val focus = remember(spec) { FocusListState() }
+    val haptics = rememberReplayHaptics()
+    // TACTILE (D-65): the menu arrives under the press that asked for it — a quick settle from a
+    // touch smaller, interactive from its first frame. It leaves at once: nothing lingers taking input.
+    val reduced = ReplayTheme.motion.reduced
+    val appear = remember(spec) { Animatable(if (reduced) 1f else 0f) }
+    LaunchedEffect(spec) { appear.animateTo(1f, ReplayMotion.pop()) }
+    InputTargetEffect(WheelContext.OVERLAY) { input ->
+        when (input) {
+            is ReplayInput.Rotate -> {
+                if (!focus.moveBy(input.detents)) haptics.boundary()
+                true
+            }
+            is ReplayInput.Press -> {
+                when (input.button) {
+                    WheelButton.CENTER -> spec.actions.getOrNull(focus.focusedIndex)?.takeIf { it.enabled }?.let {
+                        onDismiss()
+                        it.onSelect()
+                    }
+                    WheelButton.MENU -> onDismiss()
+                    else -> return@InputTargetEffect false
+                }
+                true
+            }
+            else -> input is ReplayInput.LongPress || input is ReplayInput.Release
+        }
+    }
+    Box(
+        modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = appear.value.coerceIn(0f, 1f) }
+            .background(Color.Black.copy(alpha = if (ReplayTheme.colors.isDark) 0.35f else 0.18f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss)
+            .padding(panelPadding),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier
+                .padding(horizontal = 32.dp)
+                .widthIn(max = 360.dp)
+                .fillMaxWidth()
+                .graphicsLayer {
+                    val s = 0.96f + 0.04f * appear.value
+                    scaleX = s
+                    scaleY = s
+                }
+                .glass(GlassMaterial.Regular, RoundedCornerShape(if (ReplayTheme.colors.isIndustrial) 3.dp else 22.dp))
+                .padding(vertical = 8.dp),
+        ) {
+            spec.title?.let { SectionHeader(it, Modifier.padding(bottom = 0.dp)) }
+            FocusList(
+                items = spec.actions,
+                state = focus,
+                key = { it.label },
+                contentPadding = PaddingValues(0.dp),
+                onActivate = { index ->
+                    spec.actions[index].takeIf { it.enabled }?.let {
+                        onDismiss()
+                        it.onSelect()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().heightIn(max = 52.dp * spec.actions.size),
+                paper = false,
+            ) { action, _, focused ->
+                MenuRow(action.label, focused, showChevron = false, enabled = action.enabled)
+            }
+        }
+    }
+}

@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.4)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-37" "build-tools;37.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Configure Release Signing Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.REPLAY_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.REPLAY_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.REPLAY_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.REPLAY_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "REPLAY_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> $GITHUB_ENV
+            echo "REPLAY_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "REPLAY_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "REPLAY_KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+            echo "Keystore successfully configured from secrets."
+          else
+            echo "No signing secrets found. Building release build with available configuration."
+          fi
+
+      - name: Build Release APK and Bundle
+        run: ./gradlew :app:assembleRelease :app:bundleRelease --stacktrace
+
+      - name: Package Release Assets & Calculate Checksums
+        id: assets
+        run: |
+          mkdir -p dist
+
+          # Copy canonical replay.apk
+          RELEASE_APK=$(find app/build/outputs/apk/release/ -name "*.apk" | head -n 1)
+          if [ -f "$RELEASE_APK" ]; then
+            cp "$RELEASE_APK" dist/replay.apk
+            cd dist
+            sha256sum replay.apk > replay.apk.sha256
+            APK_SHA=$(cat replay.apk.sha256 | awk '{print $1}')
+            APK_SIZE=$(du -h replay.apk | awk '{print $1}')
+            echo "apk_sha=$APK_SHA" >> $GITHUB_OUTPUT
+            echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
+            cd ..
+          else
+            echo "Error: Release APK not generated!" && exit 1
+          fi
+
+          # Copy canonical replay.aab
+          RELEASE_AAB=$(find app/build/outputs/bundle/release/ -name "*.aab" | head -n 1)
+          if [ -f "$RELEASE_AAB" ]; then
+            cp "$RELEASE_AAB" dist/replay.aab
+            cd dist
+            sha256sum replay.aab > replay.aab.sha256
+            AAB_SHA=$(cat replay.aab.sha256 | awk '{print $1}')
+            echo "aab_sha=$AAB_SHA" >> $GITHUB_OUTPUT
+            cd ..
+          fi
+
+      - name: Determine Release Tag and Notes
+        id: release_notes
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          NOTES_FILE="docs/releases/${TAG}.md"
+          OUTPUT_NOTES="dist/RELEASE_NOTES.md"
+
+          if [ -f "$NOTES_FILE" ]; then
+            cat "$NOTES_FILE" > "$OUTPUT_NOTES"
+          else
+            echo "# Replay $TAG" > "$OUTPUT_NOTES"
+            echo "" >> "$OUTPUT_NOTES"
+            echo "See [CHANGELOG.md](CHANGELOG.md) for full changes." >> "$OUTPUT_NOTES"
+          fi
+
+          echo "" >> "$OUTPUT_NOTES"
+          echo "### Checksums and Artifacts" >> "$OUTPUT_NOTES"
+          echo "| File | Size | SHA-256 Checksum |" >> "$OUTPUT_NOTES"
+          echo "|---|---|---|" >> "$OUTPUT_NOTES"
+          echo "| \`replay.apk\` | ${{ steps.assets.outputs.apk_size }} | \`${{ steps.assets.outputs.apk_sha }}\` |" >> "$OUTPUT_NOTES"
+          if [ -n "${{ steps.assets.outputs.aab_sha }}" ]; then
+            echo "| \`replay.aab\` | — | \`${{ steps.assets.outputs.aab_sha }}\` |" >> "$OUTPUT_NOTES"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_notes.outputs.tag }}
+          name: Replay ${{ steps.release_notes.outputs.tag }}
+          body_path: dist/RELEASE_NOTES.md
+          files: |
+            dist/replay.apk
+            dist/replay.apk.sha256
+            dist/replay.aab
+            dist/replay.aab.sha256
+          draft: false
+          prerelease: false

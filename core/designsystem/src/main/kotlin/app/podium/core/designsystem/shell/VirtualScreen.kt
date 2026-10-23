@@ -1,0 +1,230 @@
+package app.replay.core.designsystem.shell
+
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import app.replay.core.designsystem.component.pressFeedback
+import app.replay.core.designsystem.symbol.ReplaySymbol
+import app.replay.core.designsystem.symbol.Symbol
+import app.replay.core.designsystem.theme.DisplaySurface
+import app.replay.core.designsystem.theme.LocalDisplaySurface
+import app.replay.core.designsystem.theme.ReplayTheme
+import app.replay.core.designsystem.theme.Spacing
+import app.replay.core.designsystem.type.ReplayText
+import kotlin.math.roundToInt
+
+val ScreenCorner: Dp = 22.dp
+private val IndustrialScreenCorner: Dp = 10.dp
+
+/** Marks the display panel, so tests can check that nothing on screen escapes it. */
+const val DisplayTestTag = "replay-display"
+val ScreenHeaderHeight: Dp = 44.dp
+private val BezelWidth = 3.dp
+
+/**
+ * The display set into the device (D-26): a black bezel window, the panel inside it with its own
+ * canvas, and a glass cover — a recess shadow, a hairline panel edge and one faint reflection drawn
+ * over the content. A hard boundary: everything inside is clipped to the panel, so no artwork,
+ * glow, scroll, transition or glass can reach the body. The screen is a text container, so it is
+ * never glass itself.
+ */
+@Composable
+fun VirtualScreen(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    val colors = ReplayTheme.colors
+    val corner = if (colors.isIndustrial) IndustrialScreenCorner else ScreenCorner
+    val outer = RoundedCornerShape(corner + BezelWidth)
+    val inner = RoundedCornerShape(corner)
+    Box(
+        modifier
+            .clip(outer)
+            .background(Color(0xFF050608))
+            .border(1.dp, Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.White.copy(alpha = 0.16f))), outer)
+            .padding(BezelWidth),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .testTag(DisplayTestTag)
+                .clip(inner)
+                .background(colors.canvas)
+                .displaySurface(LocalDisplaySurface.current, colors.canvas)
+                .drawWithContent {
+                    drawContent()
+                    // Recess: the bezel's shadow falls a few dp onto the top of the display.
+                    drawRect(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.32f),
+                            1f to Color.Transparent,
+                            endY = 10.dp.toPx(),
+                        ),
+                    )
+                    // The display's own edge: a hairline where the panel meets the bezel.
+                    drawRoundRect(
+                        Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.5f), Color.White.copy(alpha = 0.07f))),
+                        cornerRadius = CornerRadius(corner.toPx()),
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
+                    // Cover glass: one faint reflection, strongest at the top-left corner. Industrial
+                    // displays are matte: no reflection at all.
+                    if (!colors.isIndustrial) drawRect(
+                        Brush.linearGradient(
+                            0f to Color.White.copy(alpha = if (colors.isDark) 0.06f else 0.10f),
+                            0.38f to Color.Transparent,
+                            start = Offset.Zero,
+                            end = Offset(size.width, size.height * 0.7f),
+                        ),
+                    )
+                },
+            content = content,
+        )
+    }
+}
+
+/**
+ * The screen's header (iPod heritage): the current title, a back chevron for touch, and a small
+ * playback indicator. No background — content fades out beneath it.
+ */
+@Composable
+fun ScreenHeader(
+    title: String,
+    canGoBack: Boolean,
+    onBack: () -> Unit,
+    /** True = playing, false = paused, null = nothing loaded. */
+    playing: Boolean?,
+    modifier: Modifier = Modifier,
+    /** How deep in the hierarchy this title is: deeper titles arrive from the right, like the content. */
+    depth: Int = 0,
+    /** Where the music is heard, or muted (D-52); null shows nothing. */
+    output: OutputIndicator? = null,
+    /** Full screen (D-85): the time, on the left, in place of the phone's hidden status bar. */
+    clock: Boolean = false,
+    /** Full screen (D-85): the phone's battery, on the right; null shows nothing. */
+    battery: BatteryLevel? = null,
+) {
+    val colors = ReplayTheme.colors
+    val type = ReplayTheme.type
+    Box(modifier.fillMaxWidth().height(ScreenHeaderHeight)) {
+        Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
+            if (canGoBack) {
+                Box(
+                    Modifier
+                        .padding(start = Spacing.xs)
+                        .size(ScreenHeaderHeight)
+                        .pressFeedback(0.86f)
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onBack)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Back"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Symbol(ReplaySymbol.ChevronLeft, colors.labelSecondary, size = 24.dp, weight = 600)
+                }
+            }
+            if (clock) TitleBarClock(colors.labelSecondary, Modifier.padding(start = if (canGoBack) 0.dp else Spacing.l))
+        }
+        // The title travels with the paper (D-29): forward slides it in from the right, back from the left.
+        val motion = ReplayTheme.motion
+        AnimatedContent(
+            targetState = title to depth,
+            transitionSpec = {
+                if (motion.reduced) {
+                    fadeIn(motion.fadeFast()) togetherWith fadeOut(motion.fadeFast())
+                } else {
+                    // SPATIAL (D-65): the title travels on its column's own curve, so the two never drift apart.
+                    val dir = if (targetState.second >= initialState.second) 1 else -1
+                    (slideInHorizontally(motion.spatial()) { dir * it / 2 } + fadeIn(motion.fadeStandard())) togetherWith
+                        (slideOutHorizontally(motion.spatial()) { -dir * it / 2 } + fadeOut(motion.fadeFast()))
+                }
+            },
+            // Room either side for the back arrow and, full screen, the time and the battery.
+            modifier = Modifier.align(Alignment.Center).padding(horizontal = if (clock || battery != null) 92.dp else 56.dp),
+            label = "headerTitle",
+        ) { (shown, _) ->
+            ReplayText(shown, type.title, colors.labelPrimary, Modifier.semantics { heading() }, maxLines = 1)
+        }
+        if (playing != null || output != null || battery != null) {
+            Row(Modifier.align(Alignment.CenterEnd).padding(end = Spacing.l), verticalAlignment = Alignment.CenterVertically) {
+                output?.let { OutputIcon(it, colors.labelSecondary) }
+                if (output != null && playing != null) Spacer(Modifier.width(Spacing.xs))
+                if (playing != null) {
+                    Symbol(
+                        if (playing) ReplaySymbol.Play else ReplaySymbol.Pause,
+                        colors.labelSecondary,
+                        size = 16.dp,
+                        weight = 600,
+                        filled = true,
+                    )
+                }
+                if (battery != null) {
+                    if (output != null || playing != null) Spacer(Modifier.width(Spacing.s))
+                    TitleBarBattery(battery, colors.labelSecondary)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The listener's background picture (D-41), behind everything on the display: cropped to fill it,
+ * centred, at the chosen opacity over its solid colour (the canvas already painted). Decoded once
+ * by the app at about the display's size, so drawing is one bitmap blit.
+ */
+private fun Modifier.displaySurface(surface: DisplaySurface?, canvas: Color): Modifier {
+    val image = surface?.image ?: return this
+    if (surface.imageAlpha <= 0f) return this
+    return drawWithCache {
+        val scale = maxOf(size.width / image.width, size.height / image.height)
+        val srcW = (size.width / scale).roundToInt().coerceIn(1, image.width)
+        val srcH = (size.height / scale).roundToInt().coerceIn(1, image.height)
+        val srcOffset = IntOffset((image.width - srcW) / 2, (image.height - srcH) / 2)
+        val dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())
+        onDrawBehind {
+            drawImage(image, srcOffset, IntSize(srcW, srcH), dstSize = dstSize, alpha = surface.imageAlpha, filterQuality = FilterQuality.Medium)
+            // A veil of the display's own colour, so text reads on a busy picture.
+            if (surface.veil > 0f) drawRect(canvas, alpha = surface.veil)
+        }
+    }
+}
+

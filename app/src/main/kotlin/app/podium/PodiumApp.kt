@@ -1,0 +1,1439 @@
+package app.replay
+
+import android.app.Activity
+import android.content.Intent
+import android.os.SystemClock
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import kotlin.math.roundToInt
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOut
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation3.runtime.NavEntry
+import androidx.navigation3.scene.Scene
+import androidx.navigation3.ui.LocalNavAnimatedContentScope
+import androidx.navigation3.ui.NavDisplay
+import app.replay.core.common.DiskActivity
+import app.replay.core.common.Outcome
+import app.replay.core.designsystem.artwork.BackgroundExtension
+import app.replay.core.designsystem.artwork.LocalArtworkLoader
+import app.replay.core.designsystem.artwork.rememberArtwork
+import app.replay.core.designsystem.component.GlassMenu
+import app.replay.core.designsystem.component.KeyboardHost
+import app.replay.core.designsystem.component.KeyboardStyle
+import app.replay.core.designsystem.component.LocalKeyboardHost
+import app.replay.core.designsystem.component.LocalKeyboardStyle
+import app.replay.core.designsystem.component.LocalMiniature
+import app.replay.core.designsystem.component.LocalMiniatureFocusKey
+import app.replay.core.designsystem.component.LocalOverlayHost
+import app.replay.core.designsystem.component.LocalPaperDecor
+import app.replay.core.designsystem.component.LocalPaperPeek
+import app.replay.core.designsystem.component.LocalPaperKey
+import app.replay.core.designsystem.component.LocalColumnTransition
+import app.replay.core.designsystem.component.softArrival
+import app.replay.core.designsystem.component.softDeparture
+import app.replay.core.designsystem.component.LocalPaperLenses
+import app.replay.core.designsystem.component.PaperLenses
+import app.replay.core.designsystem.component.LocalScreenInsets
+import app.replay.core.designsystem.component.MiniPlayer
+import app.replay.core.designsystem.component.OverlayHost
+import app.replay.core.designsystem.component.PaperGeometry
+import app.replay.core.designsystem.component.PodWheel
+import app.replay.core.designsystem.component.ScreenInsets
+import app.replay.core.designsystem.component.WheelKeyboard
+import app.replay.core.designsystem.glass.GlassHost
+import app.replay.core.designsystem.glass.scrollEdgeFade
+import app.replay.core.designsystem.shell.BootScreen
+import app.replay.core.designsystem.shell.DeviceBody
+import app.replay.core.designsystem.shell.DeviceLayout
+import app.replay.core.designsystem.shell.PowerButton
+import app.replay.core.designsystem.shell.ScreenHeader
+import app.replay.core.designsystem.shell.ScreenHeaderHeight
+import app.replay.core.designsystem.shell.ShellPalette
+import app.replay.core.designsystem.shell.StatusLeds
+import app.replay.core.designsystem.shell.palette
+import app.replay.core.designsystem.theme.Atmosphere
+import app.replay.core.designsystem.theme.AtmosphereBackground
+import app.replay.core.designsystem.theme.DisplayBackground
+import app.replay.core.designsystem.theme.LocalDisplaySurface
+import app.replay.core.designsystem.theme.ReplayMotion
+import app.replay.core.designsystem.theme.ReplayTheme
+import app.replay.core.designsystem.theme.Spacing
+import app.replay.core.interaction.Clicker
+import app.replay.core.interaction.DoublePress
+import app.replay.core.interaction.Feedback
+import app.replay.core.interaction.InputRouter
+import app.replay.core.interaction.LocalFeedback
+import app.replay.core.interaction.LocalInputRouter
+import app.replay.core.interaction.ReplayHaptics
+import app.replay.core.interaction.ReplayInput
+import app.replay.core.interaction.WheelButton
+import app.replay.core.model.AlbumId
+import app.replay.core.model.ArtistId
+import app.replay.core.model.PlaylistId
+import app.replay.core.model.Track
+import app.replay.core.model.TrackId
+import app.replay.feature.library.AlbumScreen
+import app.replay.feature.library.AlbumsScreen
+import app.replay.feature.library.ArtistScreen
+import app.replay.feature.library.ArtistsScreen
+import app.replay.feature.library.CoverFlowScreen
+import app.replay.feature.library.FavoritesScreen
+import app.replay.feature.library.HomeScreen
+import app.replay.feature.library.LibraryIndex
+import app.replay.feature.library.LibraryState
+import app.replay.feature.library.MusicScreen
+import app.replay.feature.library.SongsScreen
+import app.replay.feature.nowplaying.LyricsScreen
+import app.replay.feature.nowplaying.NowPlayingScreen
+import app.replay.feature.nowplaying.sleepTimerMenu
+import app.replay.feature.nowplaying.UpNextScreen
+import app.replay.feature.online.OnlineActions
+import app.replay.feature.online.OnlinePlace
+import app.replay.feature.online.OnlineScreen
+import app.replay.feature.settings.AppearanceLevel
+import app.replay.feature.settings.AppearanceScreen
+import app.replay.feature.settings.BackgroundScreen
+import app.replay.feature.settings.ColorTarget
+import app.replay.feature.settings.CustomColorScreen
+import app.replay.feature.settings.DeviceBodyScreen
+import app.replay.feature.settings.FinishScreen
+import app.replay.feature.settings.FontScreen
+import app.replay.feature.settings.LevelScreen
+import app.replay.feature.settings.LyricsFontScreen
+import app.replay.feature.settings.LyricsThemeScreen
+import app.replay.space.LocalReplaySpace
+import app.replay.space.HelpContent
+import app.replay.space.StickerDetail
+import app.replay.space.StickerGallery
+import app.replay.stickers.Sticker
+import app.replay.stickers.StickerEditor
+import app.replay.stickers.StickerEditorBar
+import app.replay.stickers.StickerEditorState
+import app.replay.stickers.StickerLayer
+import app.replay.stickers.StickerMaker
+import app.replay.guide.GuideTour
+import app.replay.guide.GuideState
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import app.replay.space.SpacePanel
+import app.replay.space.SpacePhase
+import app.replay.space.SpacePage
+import app.replay.space.rememberReplaySpaceState
+import app.replay.space.ReplaySpace
+import app.replay.feature.settings.MusicFoldersScreen
+import app.replay.feature.settings.OnlineServiceScreen
+import app.replay.feature.settings.SettingsScreen
+import app.replay.feature.settings.ThemeScreen
+import app.replay.feature.settings.VirtualDisplayScreen
+import app.replay.player.api.PlayIntent
+import app.replay.player.api.PlaybackController
+import app.replay.player.api.PlaybackSnapshot
+import app.replay.player.api.RecommendationRequest
+import app.replay.sources.api.ArtistSummary
+import app.replay.sources.api.CapabilityAction
+import app.replay.sources.api.MusicEnvironment
+import app.replay.sources.api.RemoteContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * Places on the paper (D-29): the hierarchy inside the screen. Album and Artist carry their ids,
+ * so they survive process death through [BackStackSaver] like everything else.
+ */
+sealed interface Dest {
+    data object Home : Dest
+    data object Music : Dest
+    data object CoverFlow : Dest
+    data object Albums : Dest
+    data object Artists : Dest
+    data object Songs : Dest
+    data object Favorites : Dest
+    data object NowPlaying : Dest
+    data object UpNext : Dest
+
+    /** Now Playing ▸ Lyrics: the whole display is the lyric (no header, no mini player). */
+    data object Lyrics : Dest
+    data object Settings : Dest
+
+    /** Settings ▸ Appearance (D-41) and its two halves. */
+    data object Appearance : Dest
+    data object DeviceBody : Dest
+    data object VirtualDisplay : Dest
+    data object Theme : Dest
+    data object Font : Dest
+    data object LyricsFont : Dest
+
+    /** Settings ▸ Appearance ▸ Virtual display ▸ Lyrics theme (D-81). */
+    data object LyricsTheme : Dest
+    data object Background : Dest
+    data object Finish : Dest
+    data object CustomColor : Dest
+
+    /** The display's background colour, in the colour editor. */
+    data object DisplayColor : Dest
+
+    /** A 0–1 level edited with the Wheel (grain, glitter, background opacity). */
+    data class Level(val level: AppearanceLevel) : Dest
+
+    /** Settings ▸ the online music service (D-38): account, the app that plays, hand-off. */
+    data object OnlineSources : Dest
+
+    /** Settings ▸ the online music service ▸ Channel (D-86). */
+    data object OnlineChannel : Dest
+    data class Album(val id: AlbumId) : Dest
+    data class Artist(val id: ArtistId) : Dest
+
+    /** A level of the music-folder tree in Settings ("" is the top). */
+    data class MusicFolders(val path: String) : Dest
+
+    /** Settings ▸ Equaliser (D-76), and one of its bands. */
+    data object Equalizer : Dest
+    data class EqualizerBand(val band: Int) : Dest
+
+    /** A place in the ONLINE section (D-34). */
+    data class Online(val place: OnlinePlace) : Dest
+}
+
+private val fixedDests = listOf(
+    Dest.Home, Dest.Music, Dest.CoverFlow, Dest.Albums, Dest.Artists, Dest.Songs, Dest.Favorites, Dest.NowPlaying,
+    Dest.UpNext, Dest.Lyrics, Dest.Settings, Dest.Appearance, Dest.DeviceBody, Dest.VirtualDisplay, Dest.Theme, Dest.Font,
+    Dest.LyricsFont, Dest.LyricsTheme, Dest.Background, Dest.Finish, Dest.CustomColor, Dest.DisplayColor, Dest.OnlineSources, Dest.OnlineChannel, Dest.Equalizer,
+).associateBy { it.toString() }
+
+private fun Dest.encode(): String = when (this) {
+    is Dest.Album -> "Album:${id.value}"
+    is Dest.Artist -> "Artist:${id.value}"
+    is Dest.MusicFolders -> "MusicFolders:$path"
+    is Dest.Online -> "Online:" + OnlinePlace.encode(place)
+    is Dest.Level -> "Level:${level.name}"
+    is Dest.EqualizerBand -> "EqualizerBand:$band"
+    else -> toString()
+}
+
+private fun decodeDest(text: String): Dest? = when {
+    text.startsWith("Album:") -> Dest.Album(AlbumId(text.removePrefix("Album:")))
+    text.startsWith("Artist:") -> Dest.Artist(ArtistId(text.removePrefix("Artist:")))
+    text.startsWith("MusicFolders:") -> Dest.MusicFolders(text.removePrefix("MusicFolders:"))
+    text.startsWith("Online:") -> OnlinePlace.decode(text.removePrefix("Online:"))?.let(Dest::Online)
+    text.startsWith("Level:") -> AppearanceLevel.entries.firstOrNull { it.name == text.removePrefix("Level:") }?.let(Dest::Level)
+    text.startsWith("EqualizerBand:") -> text.removePrefix("EqualizerBand:").toIntOrNull()
+        ?.takeIf { it in app.replay.player.api.EqualizerSettings.BANDS_HZ.indices }?.let(Dest::EqualizerBand)
+    else -> fixedDests[text]
+}
+
+private val BackStackSaver = listSaver<SnapshotStateList<Dest>, String>(
+    save = { stack -> stack.map { it.encode() } },
+    restore = { names -> mutableStateListOf(*names.mapNotNull(::decodeDest).ifEmpty { listOf(Dest.Home) }.toTypedArray()) },
+)
+
+/** The header title for a place on the paper. */
+@Composable
+private fun titleOf(dest: Dest, graph: AppGraph): String = when (dest) {
+    Dest.Home -> "Replay"
+    Dest.Music -> "Music"
+    Dest.CoverFlow -> "Cover Flow"
+    Dest.Albums -> "Albums"
+    Dest.Artists -> "Artists"
+    Dest.Songs -> "Songs"
+    Dest.Favorites -> "Favorites"
+    Dest.NowPlaying -> "Now Playing"
+    Dest.UpNext -> "Up Next"
+    Dest.Lyrics -> "Lyrics"
+    Dest.Settings -> "Settings"
+    is Dest.MusicFolders -> if (dest.path.isEmpty()) "Music folders" else dest.path.trimEnd('/').substringAfterLast('/')
+    is Dest.Online -> dest.place.title
+    Dest.Appearance -> "Appearance"
+    Dest.DeviceBody -> "Device body"
+    Dest.VirtualDisplay -> "Virtual display"
+    Dest.Theme -> "Theme"
+    Dest.Font -> "Font"
+    Dest.LyricsFont -> "Lyrics font"
+    Dest.LyricsTheme -> "Lyrics theme"
+    Dest.Background -> "Background"
+    Dest.Finish -> "Finish"
+    Dest.CustomColor -> "Custom color"
+    Dest.DisplayColor -> "Background color"
+    is Dest.Level -> dest.level.label
+    Dest.Equalizer -> "Equaliser"
+    is Dest.EqualizerBand -> app.replay.feature.settings.bandLabel(dest.band)
+    Dest.OnlineSources -> graph.onlineService.state.collectAsStateWithLifecycle().value?.name ?: "Online music"
+    Dest.OnlineChannel -> "Channel"
+    is Dest.Album -> {
+        val album by remember(dest) { graph.library.album(dest.id) }.collectAsStateWithLifecycle(initialValue = null)
+        album?.album?.title ?: "Album"
+    }
+    is Dest.Artist -> {
+        val artist by remember(dest) { graph.library.artist(dest.id) }.collectAsStateWithLifecycle(initialValue = null)
+        artist?.artist?.name ?: "Artist"
+    }
+}
+
+/**
+ * The device (D-26). The window is the device's body in the chosen finish; a recessed virtual
+ * screen above the Wheel holds the whole interface; a small power button sits beside the Wheel.
+ * All input reaches screens through the [InputRouter]; anything a screen doesn't consume falls
+ * through to the global handlers here.
+ */
+@Composable
+fun ReplayApp(graph: AppGraph, onSourceAction: (CapabilityAction) -> Unit, onTurnOff: () -> Unit = {}) {
+    val appearance by graph.deviceSettings.appearance.collectAsStateWithLifecycle()
+    val preview by graph.deviceSettings.preview.collectAsStateWithLifecycle()
+    val effective = preview ?: appearance
+    val displayImage by graph.displayImages.state.collectAsStateWithLifecycle()
+    LaunchedEffect(effective.screen.imageUri) { graph.displayImages.show(effective.screen.imageUri) }
+    ReplayTheme(
+        displayTheme = effective.display,
+        display = effective.screen,
+        displayImage = displayImage.image?.takeIf { displayImage.uri == effective.screen.imageUri },
+    ) {
+        val controller = graph.playbackController
+        val snapshot by controller.snapshot.collectAsStateWithLifecycle()
+        val power by graph.power.collectAsStateWithLifecycle()
+        // Where the music is heard (D-52). A route switched in the system's output picker sends no
+        // event, so it's looked at again every few seconds while Replay is in front.
+        val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(lifecycle) {
+            lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                while (true) {
+                    graph.audioOutput.refresh()
+                    kotlinx.coroutines.delay(OUTPUT_REFRESH_MS)
+                }
+            }
+        }
+        val colors = ReplayTheme.colors
+        val palette = effective.palette(colors.isDark)
+
+        val backStack = rememberSaveable(saver = BackStackSaver) { mutableStateListOf<Dest>(Dest.Home) }
+        val navigator = remember(backStack) { Navigator(backStack) }
+        // Debug builds: open a screen from adb (device tests that must not turn the Wheel).
+        LaunchedEffect(navigator) {
+            graph.debugOpen.collect { place ->
+                when (place) {
+                    "now-playing" -> navigator.push(Dest.NowPlaying)
+                    "lyrics" -> {
+                        navigator.push(Dest.NowPlaying)
+                        navigator.push(Dest.Lyrics)
+                    }
+                    "home" -> while (navigator.pop()) Unit
+                }
+                if (place != null) graph.debugOpen.value = null
+            }
+        }
+        val router = remember { InputRouter() }
+        val overlay = remember { OverlayHost() }
+        // Typing (D-45): fields open the Replay keyboard where the Wheel is, or the phone's.
+        val keyboard = remember { KeyboardHost() }
+        val replayKeyboard by graph.deviceSettings.replayKeyboard.collectAsStateWithLifecycle()
+        val hapticsOn by graph.deviceSettings.haptics.collectAsStateWithLifecycle()
+        val clicksOn by graph.deviceSettings.clicks.collectAsStateWithLifecycle()
+        val feedback = remember(hapticsOn, clicksOn) { Feedback(haptics = hapticsOn, clicker = if (clicksOn) graph.sounds else Clicker.Silent) }
+        val view = LocalView.current
+        val haptics = remember(view, feedback) { ReplayHaptics(view, feedback) }
+        val scope = rememberCoroutineScope()
+
+        SystemBarIcons(darkIcons = palette.isLight)
+        GlobalInput(router, navigator, overlay, haptics, controller, graph) { direction ->
+            scope.launch {
+                // Hold ⏮/⏭ to scan: 5 s steps, 5 per second (interaction-model.md §3).
+                while (isActive) {
+                    controller.seekTo((controller.positionMs() + direction * 5_000L).coerceAtLeast(0))
+                    delay(200)
+                }
+            }
+        }
+
+        // The physical Replay (D-54, D-56): pinch it into its space; the settings page beside it.
+        val space = rememberReplaySpaceState()
+        var spacePage by remember { mutableStateOf(SpacePage.MAIN) }
+        var openSticker by remember { mutableStateOf<String?>(null) }
+        var makingFrom by remember { mutableStateOf<android.net.Uri?>(null) }
+        var turningOff by remember { mutableStateOf(false) }
+        val stickerEditor = remember { StickerEditorState() }
+        val guide = remember { GuideState(graph.guide) }
+        LaunchedEffect(space.phase) {
+            if (space.phase == SpacePhase.NORMAL) {
+                spacePage = SpacePage.MAIN
+                openSticker = null
+            }
+        }
+        LaunchedEffect(space) {
+            graph.debugSpace.collect { open ->
+                if (open == true && !space.isOut) space.enter() else if (open == false && space.isOut) space.leave()
+                graph.debugSpace.value = null
+            }
+        }
+        LaunchedEffect(space) {
+            graph.debugStickerSource.collect { uri ->
+                if (uri != null) {
+                    if (!space.isOut) space.enter()
+                    makingFrom = uri
+                    graph.debugStickerSource.value = null
+                }
+            }
+        }
+        LaunchedEffect(space) {
+            graph.debugArrange.collect { arrange ->
+                if (!arrange) return@collect
+                if (!space.isOut) space.enter()
+                snapshotFlow { space.phase }.first { it == SpacePhase.PHYSICAL }
+                space.startEditing()
+                graph.debugArrange.value = false
+            }
+        }
+        LaunchedEffect(guide) {
+            graph.debugGuide.collect { start ->
+                if (start) {
+                    guide.offer()
+                    graph.debugGuide.value = false
+                }
+            }
+        }
+        // The tour (D-57): offered once Replay has switched on for the first time.
+        LaunchedEffect(power) {
+            if (power == Power.ON) {
+                delay(GUIDE_DELAY_MS)
+                guide.offer()
+            }
+        }
+        val pickPicture = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            if (uri != null) makingFrom = uri
+        }
+        fun stickOn(sticker: Sticker) {
+            val placed = graph.stickers.place(sticker.id)
+            stickerEditor.selected = placed.id
+            spacePage = SpacePage.MAIN
+            space.startEditing()
+        }
+
+        val nowPlayingArt = rememberArtwork(snapshot.item?.artworkUri, 96.dp)
+        val atmosphere = remember(nowPlayingArt, colors.isDark) {
+            nowPlayingArt?.let { Atmosphere.fromArtwork(it.asAndroidBitmap(), colors.isDark) } ?: Atmosphere.neutral(colors)
+        }
+
+        CompositionLocalProvider(
+            LocalInputRouter provides router,
+            LocalOverlayHost provides overlay,
+            LocalArtworkLoader provides graph.artworkLoader,
+            LocalFeedback provides feedback,
+            LocalKeyboardHost provides keyboard,
+            LocalKeyboardStyle provides if (replayKeyboard) KeyboardStyle.REPLAY else KeyboardStyle.PHONE,
+            LocalReplaySpace provides space,
+        ) {
+         Box(Modifier.fillMaxSize()) {
+          ReplaySpace(
+            state = space,
+            edgeColor = if (palette.isGlass) GlassEdge else palette.bodyBottom,
+            spaceTint = androidx.compose.ui.graphics.lerp(if (palette.isGlass) GlassEdge else palette.bodyBottom, Color.Black, 0.94f),
+            stickers = { StickerLayer(graph.stickers, editor = stickerEditor) },
+            stickerEditor = { StickerEditor(graph.stickers, stickerEditor) },
+            panel = {
+                BackHandler {
+                    when {
+                        space.phase == SpacePhase.STICKER_EDITING -> {
+                            stickerEditor.selected = null
+                            space.stopEditing()
+                        }
+                        spacePage != SpacePage.MAIN -> spacePage = SpacePage.MAIN
+                        else -> space.leave()
+                    }
+                }
+                SpacePanel(
+                    state = space,
+                    page = spacePage,
+                    onPage = { spacePage = it },
+                    stickers = {
+                        StickerGallery(
+                            graph.stickers,
+                            onAdd = { pickPicture.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            onOpen = {
+                                openSticker = it.id
+                                spacePage = SpacePage.STICKER
+                            },
+                            onArrange = space::startEditing,
+                        )
+                    },
+                    sticker = {
+                        StickerDetail(
+                            graph.stickers,
+                            openSticker,
+                            onStick = ::stickOn,
+                            onArrange = space::startEditing,
+                            onDeleted = {
+                                spacePage = SpacePage.MAIN
+                                openSticker = null
+                            },
+                        )
+                    },
+                    help = {
+                        HelpContent(onReplayGuide = guide::begin)
+                    },
+                    onTurnOff = {
+                        // The music stops at once; the goodbye, then Replay closes.
+                        controller.pause()
+                        turningOff = true
+                    },
+                )
+                val arranging by remember(space) { derivedStateOf { space.phase == SpacePhase.STICKER_EDITING || space.edit.value > 0.01f } }
+                if (arranging) StickerEditorBar(space, stickerEditor, graph.stickers)
+                makingFrom?.let { uri ->
+                    StickerMaker(
+                        source = uri,
+                        cutter = graph.cutter,
+                        store = graph.stickers,
+                        onSaved = { sticker ->
+                            makingFrom = null
+                            stickOn(sticker)
+                        },
+                        onCancel = { makingFrom = null },
+                    )
+                }
+            },
+          ) {
+            // One structure for every finish, so trying finishes on never rebuilds the screen.
+            GlassHost(
+                modifier = Modifier.fillMaxSize(),
+                content = { Body(palette, atmosphere, nowPlayingArt) },
+                functional = {
+                    DeviceLayout(
+                        modifier = Modifier.fillMaxSize(),
+                        screen = {
+                            AnimatedContent(
+                                targetState = power,
+                                transitionSpec = { powerTransition(initialState, targetState) },
+                                label = "power",
+                            ) { state ->
+                                when (state) {
+                                    Power.OFF -> Box(Modifier.fillMaxSize().background(Color.Black).semantics { contentDescription = "Display off" })
+                                    Power.BOOTING -> {
+                                        val checks by graph.bootChecks.collectAsStateWithLifecycle()
+                                        BootScreen(checks = checks, onChime = graph::onBootChime, onFinished = graph::onBootFinished)
+                                    }
+                                    Power.ON -> ScreenOs(graph, snapshot, backStack, navigator, overlay, atmosphere, onSourceAction)
+                                }
+                            }
+                        },
+                        wheel = { diameter ->
+                            WheelKeyboard(keyboard, diameter, palette) {
+                                PodWheel(
+                                    onInput = { router.dispatch(it) },
+                                    diameter = diameter,
+                                    isPlaying = snapshot.intent == PlayIntent.PLAY,
+                                    palette = palette,
+                                )
+                            }
+                        },
+                        keyboardOpen = keyboard.isOpen,
+                        immersive = graph.deviceSettings.immersive.collectAsStateWithLifecycle().value,
+                        powerButton = {
+                            PowerButton(on = power != Power.OFF, palette = palette, onToggle = graph::togglePower)
+                        },
+                        indicators = {
+                            val battery by graph.battery.collectAsStateWithLifecycle()
+                            StatusLeds(battery, DiskActivity.pulses, palette)
+                        },
+                    )
+                },
+            )
+          }
+          GuideTour(guide, palette)
+          if (turningOff) Farewell(onFinished = onTurnOff)
+         }
+        }
+    }
+}
+
+/**
+ * The display's power changes (D-26). Switching off dims the panel first, holds a beat, then goes
+ * black — inside the screen only; the body and the Wheel stay as they are. Waking lights the black
+ * panel straight into the boot screen.
+ */
+private fun AnimatedContentTransitionScope<Power>.powerTransition(from: Power, to: Power): ContentTransform = when {
+    to == Power.OFF -> fadeIn(
+        keyframes {
+            durationMillis = 520
+            0f at 0
+            0.55f at 150
+            0.55f at 290
+            1f at 520
+        },
+    ) togetherWith fadeOut(tween(durationMillis = 1, delayMillis = 520))
+    from == Power.OFF -> fadeIn(tween(180)) togetherWith fadeOut(tween(1, delayMillis = 180))
+    else -> fadeIn(tween(320)) togetherWith fadeOut(tween(320))
+}
+
+/** The device body: the Glass finish shows the artwork's atmosphere for the Wheel to refract. */
+@Composable
+private fun BoxScope.Body(palette: ShellPalette, atmosphere: Atmosphere, art: ImageBitmap?) {
+    if (palette.isGlass) {
+        AtmosphereBackground(atmosphere, Modifier.fillMaxSize())
+        BackgroundExtension(art, Modifier.fillMaxSize())
+    } else {
+        DeviceBody(palette, Modifier.fillMaxSize())
+    }
+}
+
+/** Everything shown on the virtual screen while the device is on. */
+@Composable
+private fun ScreenOs(
+    graph: AppGraph,
+    snapshot: PlaybackSnapshot,
+    backStack: SnapshotStateList<Dest>,
+    navigator: Navigator,
+    overlay: OverlayHost,
+    atmosphere: Atmosphere,
+    onSourceAction: (CapabilityAction) -> Unit,
+) {
+    val controller = graph.playbackController
+    val motion = ReplayTheme.motion
+    val colors = ReplayTheme.colors
+    val output by graph.audioOutput.state.collectAsStateWithLifecycle()
+    // Full screen (D-85): the title bar takes over the time and the battery from the hidden status bar.
+    val immersive by graph.deviceSettings.immersive.collectAsStateWithLifecycle()
+    val titleBarBattery by graph.deviceSettings.titleBarBattery.collectAsStateWithLifecycle()
+    val battery by graph.battery.collectAsStateWithLifecycle()
+    val top = backStack.last()
+    val miniPlayerVisible = snapshot.isActive && top.showsMiniPlayer()
+    // Lyrics take the whole display: no header, no fading edges.
+    val fullScreen = top == Dest.Lyrics
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val miniBlock = if (miniPlayerVisible) Spacing.miniPlayer + Spacing.s * 2 else Spacing.s
+        val insets = ScreenInsets(top = ScreenHeaderHeight, bottom = miniBlock)
+        val density = LocalDensity.current
+        val screenHeight = maxHeight
+        // The same geometry the lists use, so a screen moving away lands exactly in its box.
+        val paper = PaperGeometry(maxWidth, maxHeight, insets.top + 8.dp, insets.bottom + 8.dp)
+        // Where each column's lit row sits, and which column was in front before this move (D-61).
+        val lenses = remember { PaperLenses() }
+        // The column in front now, and the one in front before it. The move may be set up before or
+        // after this records the change, so the column leaving is whichever of the two isn't in front.
+        val fronts = remember { arrayOfNulls<Dest>(2) }
+        SideEffect {
+            val now = backStack.last()
+            if (fronts[1] != now) {
+                fronts[0] = fronts[1]
+                fronts[1] = now
+            }
+        }
+        val leavingLens: () -> Float? = {
+            val now = backStack.last()
+            lenses.centreOf(if (fronts[1] == now) fronts[0] else fronts[1])
+        }
+        val comingLens: () -> Float? = { lenses.centreOf(backStack.last()) }
+
+        GlassHost(
+            modifier = Modifier.fillMaxSize(),
+            content = {
+                // Glass tints the display with the artwork's atmosphere; Carbon and Bone stay matte, and
+                // a background the listener chose (D-41) shows as it is.
+                if (!colors.isIndustrial && LocalDisplaySurface.current == null) AtmosphereBackground(atmosphere, Modifier.fillMaxSize())
+                CompositionLocalProvider(LocalScreenInsets provides insets, LocalPaperLenses provides lenses) {
+                    NavDisplay(
+                        backStack = backStack,
+                        modifier = Modifier.fillMaxSize().scrollEdgeFade(
+                            topFadePx = if (fullScreen) 0f else with(density) { insets.top.toPx() },
+                            bottomStartPx = with(density) { (if (fullScreen) screenHeight else screenHeight - insets.bottom.coerceAtLeast(24.dp)).toPx() },
+                        ),
+                        onBack = { navigator.pop() },
+                        // Forward: the column in front leaves for the left box, the new one comes from the right.
+                        // Back: the column in front leaves for the right box, the one behind comes from the left.
+                        transitionSpec = { paperForward(paper, density, motion.reduced, leaving = leavingLens()) },
+                        popTransitionSpec = { paperBack(paper, density, motion.reduced, leaving = leavingLens(), coming = comingLens()) },
+                        predictivePopTransitionSpec = { paperBack(paper, density, motion.reduced, leaving = leavingLens(), coming = comingLens()) },
+                        entryProvider = { key ->
+                            // Glass lets Now Playing rise from the mini player; Carbon and Bone keep the whole
+                            // hierarchy on one horizontal sheet of paper (D-29).
+                            val rise = key == Dest.NowPlaying && !colors.isIndustrial
+                            NavEntry(key, metadata = if (rise) riseFromMiniPlayer(motion) else emptyMap()) { screen ->
+                                // Each screen sees the column before it on the paper peeking in at its left.
+                                val position = backStack.indexOf(screen)
+                                val previous = if (position > 0) backStack[position - 1] else null
+                                val peek: (@Composable (Modifier) -> Unit)? = previous?.let { prev ->
+                                    { m -> PreviousColumn(prev, screen, graph, navigator, m) }
+                                }
+                                val scope = LocalNavAnimatedContentScope.current
+                                val decor: @Composable () -> Modifier = {
+                                    // The glimpses come in as the move settles, soft then sharp, overlapping
+                                    // the column that sinks into their box (D-62).
+                                    with(scope) {
+                                        Modifier
+                                            .animateEnterExit(
+                                                enter = fadeIn(tween(GlimpseArrivalMillis, delayMillis = if (motion.reduced) 0 else GlimpseDelayMillis, easing = ReplayMotion.Standard)),
+                                                exit = fadeOut(tween(80)),
+                                            )
+                                            .softArrival(scope, delayMillis = GlimpseDelayMillis, durationMillis = GlimpseArrivalMillis + 80)
+                                    }
+                                }
+                                CompositionLocalProvider(
+                                    LocalPaperPeek provides peek,
+                                    LocalPaperDecor provides decor,
+                                    LocalPaperKey provides screen,
+                                    LocalColumnTransition provides scope,
+                                ) {
+                                    // Leaving for a box, a column melts into the glimpse that takes its place (D-64).
+                                    Box(Modifier.fillMaxSize().softDeparture(scope, delayMillis = DepartureDelayMillis, durationMillis = PaperTransitionMillis - DepartureDelayMillis)) {
+                                        ScreenContent(screen, graph, navigator, onSourceAction)
+                                    }
+                                }
+                            }
+                        },
+                    )
+                }
+            },
+            functional = {
+                if (!fullScreen) ScreenHeader(
+                    title = titleOf(top, graph),
+                    depth = backStack.size,
+                    canGoBack = backStack.size > 1,
+                    onBack = { navigator.pop() },
+                    playing = if (snapshot.isActive) snapshot.intent == PlayIntent.PLAY else null,
+                    output = output.indicator(),
+                    clock = immersive,
+                    battery = if (immersive && titleBarBattery) battery else null,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+                AnimatedVisibility(
+                    visible = miniPlayerVisible,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    enter = fadeIn(motion.fadeStandard()) + slideInVertically(motion.navigateOffset()) { it / 2 },
+                    exit = fadeOut(motion.fadeFast()) + slideOutVertically(motion.navigateOffset()) { it / 2 },
+                ) {
+                    val item = snapshot.item
+                    if (item != null) {
+                        MiniPlayer(
+                            title = item.title,
+                            subtitle = item.artistDisplay,
+                            artworkUri = item.artworkUri,
+                            isPlaying = snapshot.intent == PlayIntent.PLAY,
+                            progress = {
+                                val duration = item.durationMs ?: 0L
+                                if (duration <= 0) 0f else (controller.positionMs().toFloat() / duration).coerceIn(0f, 1f)
+                            },
+                            onOpen = navigator::showNowPlaying,
+                            onPlayPause = controller::togglePlayPause,
+                            onNext = controller::next,
+                            modifier = Modifier.padding(Spacing.s).fillMaxWidth(),
+                        )
+                    }
+                }
+                // Back folds the keyboard away before it goes anywhere (D-45). Registered when it
+                // opens, so it comes after the navigation's own handler and wins.
+                val keyboard = LocalKeyboardHost.current
+                if (keyboard != null && keyboard.isOpen) BackHandler { keyboard.dismiss() }
+                overlay.menu?.let { spec ->
+                    GlassMenu(spec, onDismiss = overlay::dismiss, panelPadding = PaddingValues(top = ScreenHeaderHeight))
+                    BackHandler { overlay.dismiss() }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The column before [current], live (D-29): the previous screen itself, scaled into the box at
+ * middle-left with the item that led here focused. It takes no input and has no side effects
+ * (its own wheel targets go to a throwaway router); tapping it goes back.
+ */
+@Composable
+private fun PreviousColumn(previous: Dest, current: Dest, graph: AppGraph, navigator: Navigator, modifier: Modifier) {
+    val snapshot by graph.playbackController.snapshot.collectAsStateWithLifecycle()
+    val focusKey = when (current) {
+        is Dest.Album -> current.id.value
+        is Dest.Artist -> current.id.value
+        Dest.NowPlaying -> snapshot.item?.trackId?.value
+        // Settings rows are keyed by their enum names.
+        Dest.Appearance -> "Appearance"
+        Dest.DeviceBody -> "DeviceBody"
+        Dest.VirtualDisplay -> "VirtualDisplay"
+        Dest.Theme -> "Theme"
+        Dest.Font -> "Font"
+        Dest.LyricsFont -> "LyricsFont"
+        Dest.LyricsTheme -> "LyricsTheme"
+        Dest.Background -> "Background"
+        Dest.Finish -> "Finish"
+        Dest.CustomColor -> if (previous == Dest.Finish) "CUSTOM" else "CustomColor"
+        Dest.DisplayColor -> "BackgroundColor"
+        is Dest.Level -> current.level.name
+        Dest.Equalizer -> "Equalizer"
+        is Dest.EqualizerBand -> "Band(index=${current.band})"
+        else -> titleOf(current, graph)
+    }
+    val backLabel = "Back to ${titleOf(previous, graph)}"
+    Box(modifier) {
+        Box(Modifier.fillMaxSize()) {
+            CompositionLocalProvider(
+                LocalMiniature provides true,
+                LocalMiniatureFocusKey provides focusKey,
+                LocalInputRouter provides remember { InputRouter() },
+                LocalOverlayHost provides remember { OverlayHost() },
+                LocalPaperPeek provides null,
+                LocalColumnTransition provides null,
+            ) {
+                ScreenContent(previous, graph, navigator, onSourceAction = {})
+            }
+        }
+        // The miniature is a picture of where you were: touching it takes you back there.
+        Box(
+            Modifier
+                .matchParentSize()
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { navigator.pop() }
+                .semantics { contentDescription = backLabel },
+        )
+    }
+}
+
+private val MiniPlayerScreens = setOf(Dest.Home, Dest.Music, Dest.Albums, Dest.Artists, Dest.Songs, Dest.Favorites)
+
+private fun Dest.showsMiniPlayer() = this in MiniPlayerScreens || this is Dest.Album || this is Dest.Artist ||
+    (this is Dest.Online && place !is OnlinePlace.Search && place !is OnlinePlace.NamePlaylist)
+
+@Composable
+private fun ScreenContent(
+    screen: Dest,
+    graph: AppGraph,
+    navigator: Navigator,
+    onSourceAction: (CapabilityAction) -> Unit,
+) {
+    val replaySpace = app.replay.space.LocalReplaySpace.current
+    val overlay = LocalOverlayHost.current
+    val controller = graph.playbackController
+    val settings = graph.deviceSettings
+    val onlineStatus by graph.online.status.collectAsStateWithLifecycle()
+    val onlineRecent by graph.online.recentlyPlayed.collectAsStateWithLifecycle(initialValue = emptyList())
+    val play: (List<Track>, Int, String) -> Unit = { tracks, index, label ->
+        controller.playContext(tracks.map { it.id }, index, label)
+        navigator.showNowPlaying()
+    }
+    val playNext: (Track) -> Unit = { controller.playNext(listOf(it.id)) }
+    val addToQueue: (Track) -> Unit = { controller.addToQueue(listOf(it.id)) }
+    when (screen) {
+        Dest.Home -> {
+            val snapshot by controller.snapshot.collectAsStateWithLifecycle()
+            HomeScreen(
+                repository = graph.library,
+                nowPlayingArtwork = snapshot.item?.artworkUri,
+                nowPlayingActive = snapshot.isActive,
+                onMusic = { navigator.push(Dest.Music) },
+                onShuffleSongs = {
+                    val tracks = (graph.library.songs.value as? LibraryState.Ready)?.tracks.orEmpty()
+                    if (tracks.isNotEmpty()) {
+                        controller.playContext(tracks.map { it.id }, 0, "Songs", shuffle = true)
+                        navigator.showNowPlaying()
+                    }
+                },
+                onNowPlaying = navigator::showNowPlaying,
+                onSettings = { navigator.push(Dest.Settings) },
+                onOnline = if (onlineStatus != null) ({ navigator.push(Dest.Online(OnlinePlace.Menu)) }) else null,
+                onlineArtwork = onlineRecent.mapNotNull { it.artwork?.uri }.distinct().take(10),
+                onSourceAction = onSourceAction,
+            )
+        }
+        Dest.Music -> MusicScreen(
+            repository = graph.library,
+            favorites = graph.localFavorites,
+            onCoverFlow = { navigator.push(Dest.CoverFlow) },
+            onAlbums = { navigator.push(Dest.Albums) },
+            onArtists = { navigator.push(Dest.Artists) },
+            onSongs = { navigator.push(Dest.Songs) },
+            onFavorites = { navigator.push(Dest.Favorites) },
+            onSourceAction = onSourceAction,
+        )
+        Dest.CoverFlow -> CoverFlowScreen(graph.library, onOpen = { navigator.push(Dest.Album(it)) })
+        Dest.Albums -> AlbumsScreen(graph.library, onOpen = { navigator.push(Dest.Album(it)) })
+        Dest.Artists -> ArtistsScreen(graph.library, onOpen = { navigator.push(Dest.Artist(it)) })
+        is Dest.Album -> AlbumScreen(graph.library, screen.id, onPlay = play, onPlayNext = playNext, onAddToQueue = addToQueue)
+        is Dest.Artist -> ArtistScreen(graph.library, screen.id, onOpenAlbum = { navigator.push(Dest.Album(it)) }, onPlay = play)
+        Dest.Favorites -> FavoritesScreen(graph.library, graph.localFavorites, onPlay = play, onPlayNext = playNext, onAddToQueue = addToQueue)
+        Dest.Songs -> SongsScreen(
+            repository = graph.library,
+            onPlay = { tracks, index -> play(tracks, index, "Songs") },
+            onPlayNext = playNext,
+            onAddToQueue = addToQueue,
+        )
+        Dest.NowPlaying -> NowPlayingScreen(
+            controller,
+            graph.volume,
+            graph.favorites,
+            onUpNext = { navigator.push(Dest.UpNext) },
+            environmentOf = { id -> if (graph.environments.isOnline(id)) "Online" else null },
+            onLyrics = { navigator.push(Dest.Lyrics) },
+            trackOf = { id -> graph.songPages.of(id) },
+            sleepTimer = graph.sleepTimer,
+            // Each page in the song's own environment (D-34): the library's, or online's.
+            onOpenAlbum = { track ->
+                val album = track.album
+                val id = album?.id
+                if (id != null) when (graph.registry.get(id.sourceId)?.descriptor?.environment) {
+                    MusicEnvironment.LOCAL -> navigator.push(Dest.Album(id))
+                    MusicEnvironment.ONLINE -> navigator.push(Dest.Online(OnlinePlace.Collection(PlaylistId(id.value), album.title, isAlbum = true)))
+                    null -> Unit
+                }
+            },
+            onOpenArtist = { artist ->
+                val id = artist.id
+                if (id != null) when (graph.registry.get(id.sourceId)?.descriptor?.environment) {
+                    MusicEnvironment.LOCAL -> navigator.push(Dest.Artist(id))
+                    MusicEnvironment.ONLINE -> navigator.push(Dest.Online(OnlinePlace.Artist(id, artist.name)))
+                    null -> Unit
+                }
+            },
+        )
+        Dest.Lyrics -> LyricsScreen(controller, graph.lyricsGateway, graph.audioPulse)
+        is Dest.Online -> OnlineScreen(
+            place = screen.place,
+            repository = graph.online,
+            actions = rememberOnlineActions(graph, navigator),
+            navigate = { navigator.push(Dest.Online(it)) },
+            back = { navigator.pop() },
+        )
+        Dest.UpNext -> UpNextScreen(controller)
+        Dest.Settings -> SettingsScreen(
+            onReplaySpace = { replaySpace?.enter() },
+            repository = settings,
+            folders = graph.musicFolders,
+            onlineService = graph.onlineService,
+            onAppearance = { navigator.push(Dest.Appearance) },
+            onMusicFolders = { navigator.push(Dest.MusicFolders("")) },
+            onOnlineService = { navigator.push(Dest.OnlineSources) },
+            onEqualizer = { navigator.push(Dest.Equalizer) },
+            sleepTimer = graph.sleepTimer,
+            onSleepTimer = { overlay.show(sleepTimerMenu(graph.sleepTimer)) },
+        )
+        Dest.Equalizer -> app.replay.feature.settings.EqualizerScreen(settings, onBand = { navigator.push(Dest.EqualizerBand(it)) })
+        is Dest.EqualizerBand -> app.replay.feature.settings.EqualizerBandScreen(settings, screen.band, onDone = { navigator.pop() })
+        Dest.OnlineSources -> OnlineServiceScreen(graph.onlineService, onChannels = { navigator.push(Dest.OnlineChannel) })
+        Dest.OnlineChannel -> app.replay.feature.settings.ServiceChannelScreen(graph.onlineService)
+        is Dest.MusicFolders -> MusicFoldersScreen(graph.musicFolders, screen.path, onOpen = { navigator.push(Dest.MusicFolders(it)) })
+        Dest.Appearance -> AppearanceScreen(
+            settings,
+            onDeviceBody = { navigator.push(Dest.DeviceBody) },
+            onVirtualDisplay = { navigator.push(Dest.VirtualDisplay) },
+        )
+        Dest.DeviceBody -> DeviceBodyScreen(
+            settings,
+            onFinish = { navigator.push(Dest.Finish) },
+            onCustomColor = { navigator.push(Dest.CustomColor) },
+            onLevel = { navigator.push(Dest.Level(it)) },
+        )
+        Dest.VirtualDisplay -> {
+            val image by graph.displayImages.state.collectAsStateWithLifecycle()
+            VirtualDisplayScreen(
+                settings,
+                imageStatus = image.status,
+                onTheme = { navigator.push(Dest.Theme) },
+                onFont = { navigator.push(Dest.Font) },
+                onLyricsFont = { navigator.push(Dest.LyricsFont) },
+                onLyricsTheme = { navigator.push(Dest.LyricsTheme) },
+                onBackground = { navigator.push(Dest.Background) },
+                onBackgroundColor = { navigator.push(Dest.DisplayColor) },
+                onLevel = { navigator.push(Dest.Level(it)) },
+            )
+        }
+        Dest.Theme -> ThemeScreen(settings)
+        Dest.Font -> FontScreen(settings)
+        Dest.LyricsFont -> LyricsFontScreen(settings)
+        Dest.LyricsTheme -> LyricsThemeScreen(settings)
+        Dest.Background -> {
+            val image by graph.displayImages.state.collectAsStateWithLifecycle()
+            // The system photo picker: no storage permission; Replay keeps only the URI.
+            val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                if (uri != null) {
+                    val current = settings.appearance.value
+                    graph.displayImages.adopt(uri, previous = current.screen.imageUri)
+                    settings.setAppearance(current.copy(screen = current.screen.copy(background = DisplayBackground.IMAGE, imageUri = uri.toString())))
+                    settings.setPreview(null)
+                }
+            }
+            BackgroundScreen(settings, image.status, onChooseImage = {
+                pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            })
+        }
+        Dest.Finish -> FinishScreen(settings, onCustomColor = { navigator.push(Dest.CustomColor) })
+        Dest.CustomColor -> CustomColorScreen(settings)
+        Dest.DisplayColor -> CustomColorScreen(settings, ColorTarget.DisplayBackground)
+        is Dest.Level -> LevelScreen(settings, screen.level)
+    }
+}
+
+/** The back stack's only writer. */
+private class Navigator(private val stack: SnapshotStateList<Dest>) {
+    fun push(screen: Dest) {
+        if (stack.last() != screen) {
+            stack.add(screen)
+            DiskActivity.pulse() // opening a folder on the paper
+        }
+    }
+
+    /** @return false at the root. */
+    fun pop(): Boolean {
+        if (stack.size <= 1) return false
+        stack.removeAt(stack.lastIndex)
+        DiskActivity.pulse()
+        return true
+    }
+
+    fun popToRoot(): Boolean {
+        if (stack.size <= 1) return false
+        while (stack.size > 1) stack.removeAt(stack.lastIndex)
+        return true
+    }
+
+    /** Back to [screen] if it's in the stack; otherwise one level. */
+    fun popTo(screen: Dest) {
+        if (screen !in stack) {
+            pop()
+            return
+        }
+        while (stack.last() != screen) stack.removeAt(stack.lastIndex)
+    }
+
+    /** The screen on top. */
+    val current: Dest get() = stack.last()
+
+    /** Now Playing is a single instance: return to it if it's already in the stack. */
+    fun showNowPlaying() {
+        val existing = stack.indexOf(Dest.NowPlaying)
+        if (existing >= 0) {
+            while (stack.lastIndex > existing) stack.removeAt(stack.lastIndex)
+        } else {
+            stack.add(Dest.NowPlaying)
+        }
+    }
+}
+
+/**
+ * Menu = back, long Menu = Home, transport buttons = playback, hold ⏮/⏭ to scan (ADR-011), double
+ * ⏯ = Now Playing (D-68). Switched off, any press wakes the device; while it boots, input is ignored.
+ */
+@Composable
+private fun GlobalInput(
+    router: InputRouter,
+    navigator: Navigator,
+    overlay: OverlayHost,
+    haptics: ReplayHaptics,
+    controller: PlaybackController,
+    graph: AppGraph,
+    startScan: (direction: Int) -> Job,
+) {
+    DisposableEffect(router, navigator) {
+        var scan: Job? = null
+        val playPause = DoublePress()
+        router.global = handler@{ input ->
+            when (graph.power.value) {
+                Power.OFF -> {
+                    if (input is ReplayInput.Press) graph.wake()
+                    return@handler true
+                }
+                Power.BOOTING -> return@handler true
+                Power.ON -> Unit
+            }
+            when (input) {
+                is ReplayInput.Press -> when (input.button) {
+                    WheelButton.MENU -> {
+                        if (!navigator.pop()) haptics.boundary()
+                        true
+                    }
+                    WheelButton.PLAY_PAUSE -> {
+                        controller.togglePlayPause()
+                        // Two quick presses: show what's playing, from anywhere. The first press
+                        // already toggled at once (⏯ never waits); the second undoes it, so the
+                        // music is as it was. On Now Playing itself both presses simply toggle.
+                        val double = playPause.press(SystemClock.uptimeMillis())
+                        if (double && navigator.current != Dest.NowPlaying && controller.snapshot.value.item != null) {
+                            overlay.dismiss()
+                            navigator.showNowPlaying()
+                        }
+                        true
+                    }
+                    WheelButton.NEXT -> { controller.next(); true }
+                    WheelButton.PREVIOUS -> { controller.previous(); true }
+                    WheelButton.CENTER -> false
+                }
+                is ReplayInput.LongPress -> when (input.button) {
+                    // Hold ⏯ to switch off, as on the original.
+                    WheelButton.PLAY_PAUSE -> {
+                        graph.togglePower()
+                        true
+                    }
+                    WheelButton.MENU -> {
+                        if (!navigator.popToRoot()) haptics.boundary()
+                        true
+                    }
+                    WheelButton.NEXT, WheelButton.PREVIOUS -> {
+                        scan?.cancel()
+                        scan = startScan(if (input.button == WheelButton.NEXT) 1 else -1)
+                        true
+                    }
+                    else -> false
+                }
+                is ReplayInput.Release -> {
+                    scan?.cancel()
+                    scan = null
+                    true
+                }
+                is ReplayInput.Rotate -> false
+            }
+        }
+        onDispose {
+            scan?.cancel()
+            router.global = { false }
+        }
+    }
+}
+
+/** Status- and navigation-bar icons follow the body: dark icons on Silver and Glacier blue. */
+@Composable
+private fun SystemBarIcons(darkIcons: Boolean) {
+    val view = LocalView.current
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = darkIcons
+            isAppearanceLightNavigationBars = darkIcons
+        }
+    }
+}
+
+/** One move along the paper (SPATIAL, D-65). */
+private const val PaperTransitionMillis = ReplayMotion.SpatialMillis
+
+/**
+ * The glimpses arrive as the column leaving reaches its box (92 % of the way, at 47 % of the time on
+ * [ReplayMotion.Spatial]), overlapping it, and sharpen as the move settles.
+ */
+private const val GlimpseDelayMillis = PaperTransitionMillis * 47 / 100
+private const val GlimpseArrivalMillis = 240
+
+/** The column leaving softens from 88 % of its way (40 % of the time), as its glimpse arrives. */
+private const val DepartureDelayMillis = PaperTransitionMillis * 40 / 100
+
+/**
+ * Forward along the paper (D-29, after the user's sketch): the next column grows out of its
+ * preview box at middle-right and rises along the curve into focus, while the current screen
+ * sinks down and to the left into the previous-column box — the Wheel turning one step. Every part
+ * of the move follows one curve, [ReplayMotion.Spatial] (D-65, after D-60): it leaves on the frame
+ * of the press, keeps going and settles with a long, soft finish — never pausing part-way.
+ */
+private fun AnimatedContentTransitionScope<Scene<Dest>>.paperForward(
+    g: PaperGeometry,
+    density: Density,
+    reduced: Boolean,
+    leaving: Float?,
+): ContentTransform {
+    if (reduced) return fadeIn(tween(160)) togetherWith fadeOut(tween(120))
+    val (right, left, lift) = paperPoints(g, density)
+    return paperMove(
+        enterFrom = right,
+        enterScale = g.tileScale,
+        exitTo = left + litToLeftBox(g, density, leaving),
+        exitScale = g.glimpseScale,
+        lift = lift,
+    )
+}
+
+/** Back along the paper: the previous column rises out of its box into focus; the current one sinks into the next box. */
+private fun AnimatedContentTransitionScope<Scene<Dest>>.paperBack(
+    g: PaperGeometry,
+    density: Density,
+    reduced: Boolean,
+    leaving: Float?,
+    coming: Float?,
+): ContentTransform {
+    if (reduced) return fadeIn(tween(160)) togetherWith fadeOut(tween(120))
+    val (right, left, lift) = paperPoints(g, density)
+    return paperMove(
+        enterFrom = left + litToLeftBox(g, density, coming),
+        enterScale = g.glimpseScale,
+        exitTo = right,
+        exitScale = g.tileScale,
+        lift = lift,
+    )
+}
+
+/**
+ * How far to move a column sitting in the left box (at [PaperGeometry.peekScale]) so its lit row,
+ * at [litY] px in the column, lands on the box's middle — where the glimpse shows that row (D-61).
+ */
+private fun litToLeftBox(g: PaperGeometry, density: Density, litY: Float?): IntOffset = with(density) {
+    val lit = litY ?: return IntOffset.Zero
+    IntOffset(0, ((g.centreY.toPx() - lit) * g.glimpseScale).roundToInt())
+}
+
+
+private fun paperMove(enterFrom: IntOffset, enterScale: Float, exitTo: IntOffset, exitScale: Float, lift: Int): ContentTransform {
+    val d = PaperTransitionMillis
+    val spatial = ReplayMotion.Spatial
+    // The column coming in rises out of its box along an arc; the one leaving dips into the other.
+    // The leaving column fades only once it is in its box (95 % of the way), under its glimpse.
+    val enter = slideIn(arc(enterFrom, IntOffset.Zero, IntOffset(enterFrom.x / 2, enterFrom.y - lift), d)) { enterFrom } +
+        scaleIn(tween(d, easing = spatial), initialScale = enterScale) +
+        fadeIn(tween(d * 45 / 100, easing = spatial), initialAlpha = 0.55f)
+    val exit = slideOut(arc(IntOffset.Zero, exitTo, IntOffset(exitTo.x / 2, exitTo.y + lift), d)) { exitTo } +
+        scaleOut(tween(d, easing = spatial), targetScale = exitScale) +
+        fadeOut(tween(d * 43 / 100, delayMillis = d * 57 / 100, easing = ReplayMotion.Standard))
+    return enter togetherWith exit
+}
+
+/**
+ * A move from [from] to [to] along the arc through [through] (its midpoint), timed by one curve
+ * end to end ([ReplayMotion.Spatial]): the path is a quadratic curve, sampled finely at eased
+ * times, so the speed never dips part-way and the first frame already moves.
+ */
+private fun arc(from: IntOffset, to: IntOffset, through: IntOffset, durationMillis: Int) = keyframes<IntOffset> {
+    this.durationMillis = durationMillis
+    // The control point that makes the curve pass through [through] halfway.
+    val cx = 2f * through.x - (from.x + to.x) / 2f
+    val cy = 2f * through.y - (from.y + to.y) / 2f
+    for (i in 0..ArcSamples) {
+        val time = i / ArcSamples.toFloat()
+        val t = ReplayMotion.Spatial.transform(time)
+        val u = 1f - t
+        val x = u * u * from.x + 2f * u * t * cx + t * t * to.x
+        val y = u * u * from.y + 2f * u * t * cy + t * t * to.y
+        IntOffset(x.roundToInt(), y.roundToInt()) at (durationMillis * i / ArcSamples) using LinearEasing
+    }
+}
+
+private const val ArcSamples = 30
+
+/**
+ * Centre offsets of a screen sitting in the next box (whole, filling the tile's frame at
+ * [PaperGeometry.tileScale] — D-66) and in the previous box (exactly as the glimpse shows it, at
+ * [PaperGeometry.glimpseScale] — D-63), and how far the path arcs.
+ */
+private fun paperPoints(g: PaperGeometry, density: Density): Triple<IntOffset, IntOffset, Int> = with(density) {
+    val right = IntOffset(
+        (g.tileLeft + g.width * g.tileScale / 2 - g.width / 2).roundToPx(),
+        (g.centreY - g.height / 2).roundToPx(),
+    )
+    val left = IntOffset(
+        (g.glimpseOriginX + g.width * g.glimpseScale / 2 - g.width / 2).roundToPx(),
+        (g.glimpseOriginY + g.height * g.glimpseScale / 2 - g.height / 2).roundToPx(),
+    )
+    Triple(right, left, (g.height * 0.12f).roundToPx())
+}
+
+/**
+ * Now Playing rises from where the mini player sits and sinks back into it, so library → mini
+ * player → Now Playing reads as one gesture. Its siblings keep the horizontal strip.
+ */
+private fun riseFromMiniPlayer(motion: ReplayMotion): Map<String, Any> {
+    val sink: AnimatedContentTransitionScope<Scene<*>>.() -> ContentTransform = {
+        if (motion.reduced) {
+            fadeIn(motion.fadeStandard()) togetherWith fadeOut(motion.fadeFast())
+        } else {
+            (fadeIn(tween(240)) + scaleIn(tween(320), initialScale = 0.97f)) togetherWith
+                (slideOutVertically(motion.navigateOffset()) { it } + fadeOut(tween(220, delayMillis = 80)))
+        }.apply { targetContentZIndex = -1f }
+    }
+    return NavDisplay.transitionSpec {
+        if (motion.reduced) {
+            fadeIn(motion.fadeStandard()) togetherWith fadeOut(motion.fadeFast())
+        } else {
+            (slideInVertically(motion.navigateOffset()) { it } + fadeIn(tween(200))) togetherWith
+                (fadeOut(tween(260)) + scaleOut(tween(320), targetScale = 0.97f))
+        }
+    } + NavDisplay.popTransitionSpec(sink) + NavDisplay.predictivePopTransitionSpec { sink() }
+}
+
+/**
+ * What ONLINE asks of the player and the system (D-34). Songs go into the catalog first, so the
+ * service can play them by id; radios start as RADIO items from the source's own recommendations.
+ */
+@Composable
+private fun rememberOnlineActions(graph: AppGraph, navigator: Navigator): OnlineActions {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    return remember(graph, navigator, context) {
+        val controller = graph.playbackController
+        object : OnlineActions {
+            private fun startRadio(seed: List<Track>, label: String) {
+                if (seed.isEmpty()) return
+                graph.catalog.remember(seed)
+                controller.playContext(seed.map { it.id }, 0, label, radio = true)
+                navigator.showNowPlaying()
+            }
+
+            override fun play(tracks: List<Track>, index: Int, label: String) {
+                if (tracks.isEmpty()) return
+                graph.catalog.remember(tracks)
+                controller.playContext(tracks.map { it.id }, index.coerceIn(0, tracks.lastIndex), label)
+                navigator.showNowPlaying()
+            }
+
+            override fun shuffle(tracks: List<Track>, label: String) {
+                if (tracks.isEmpty()) return
+                graph.catalog.remember(tracks)
+                controller.playContext(tracks.map { it.id }, tracks.indices.random(), label, shuffle = true)
+                navigator.showNowPlaying()
+            }
+
+            override fun playNext(track: Track) {
+                graph.catalog.remember(listOf(track))
+                controller.playNext(listOf(track.id))
+            }
+
+            override fun addToQueue(track: Track) {
+                graph.catalog.remember(listOf(track))
+                controller.addToQueue(listOf(track.id))
+            }
+
+            override fun playAlone(track: Track) {
+                graph.catalog.remember(listOf(track))
+                if (graph.playsRemotely(track)) {
+                    // The app that plays it carries on from this song itself (§8.5).
+                    controller.playCollection(listOf(track.id), 0, "${track.title} radio", RemoteContext.Radio(track))
+                } else {
+                    // Only this song is queued: autoplay asks its source for songs like it straight
+                    // away (the queue is short), so Up Next fills with them while it plays (D-74).
+                    controller.playContext(listOf(track.id), 0, track.title)
+                }
+                navigator.showNowPlaying()
+            }
+
+            override fun startRadio(track: Track) {
+                graph.catalog.remember(listOf(track))
+                if (graph.playsRemotely(track)) {
+                    // The app that plays it runs its own radio from this song (YOUTUBE_MUSIC_ARCHITECTURE §8.5).
+                    controller.playCollection(listOf(track.id), 0, "${track.title} radio", RemoteContext.Radio(track))
+                    navigator.showNowPlaying()
+                    return
+                }
+                scope.launch {
+                    val more = graph.recommendations.recommend(RecommendationRequest(listOf(track), setOf(track.id), RADIO_SIZE))
+                    startRadio(listOf(track) + more.filter { it.id != track.id }, "${track.title} radio")
+                }
+            }
+
+            override fun startArtistRadio(artist: ArtistSummary) {
+                scope.launch {
+                    val top = (graph.online.artist(artist.id) as? Outcome.Success)?.value?.tracks?.firstOrNull()
+                    if (top != null && graph.playsRemotely(top)) {
+                        graph.catalog.remember(listOf(top))
+                        controller.playCollection(listOf(top.id), 0, "${artist.name} radio", RemoteContext.ArtistRadio(artist.id))
+                        navigator.showNowPlaying()
+                        return@launch
+                    }
+                    val tracks = graph.recommendations.artistRadio(artist.id, artist.id.sourceId, RADIO_SIZE, emptySet())
+                    startRadio(tracks, "${artist.name} radio")
+                }
+            }
+
+            override fun playCollection(tracks: List<Track>, index: Int, label: String, collection: PlaylistId, shuffle: Boolean) {
+                if (tracks.isEmpty()) return
+                graph.catalog.remember(tracks)
+                val start = if (shuffle) tracks.indices.random() else index.coerceIn(0, tracks.lastIndex)
+                controller.playCollection(tracks.map { it.id }, start, label, RemoteContext.Collection(collection), shuffle)
+                navigator.showNowPlaying()
+            }
+
+            override fun signIn() = graph.onlineService.signIn()
+
+            override fun startGenreRadio(genre: String) {
+                scope.launch {
+                    val tracks = (graph.online.genre(genre, 0, RADIO_SIZE) as? Outcome.Success)?.value.orEmpty().shuffled()
+                    startRadio(tracks, "$genre radio")
+                }
+            }
+
+            override fun share(track: Track) {
+                val link = track.source.providerUri ?: return
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_TEXT, "${track.title} by ${track.artistDisplay}\n$link")
+                context.startActivity(Intent.createChooser(send, "Share ${track.title}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+
+            override val nowPlaying: StateFlow<Track?> = controller.snapshot
+                .map { snap -> snap.item?.trackId?.takeIf { graph.environments.isOnline(it) }?.let { graph.catalog.cached(it) } }
+                .stateIn(scope, SharingStarted.Eagerly, null)
+        }
+    }
+}
+
+private const val RADIO_SIZE = 30
+
+private const val OUTPUT_REFRESH_MS = 4_000L
+
+/** The guide waits a moment after switching on, for the display to settle (and any first question). */
+private const val GUIDE_DELAY_MS = 900L
+
+/** The slab's edge for the Glass finish (its body is the artwork's atmosphere, not a colour). */
+private val GlassEdge = Color(0xFF1C1E22)
+
+/** The status bar's output glyph: muted first, then where the music goes (none for other outputs). */
+private fun app.replay.player.service.AudioOutputState.indicator(): app.replay.core.designsystem.shell.OutputIndicator? = when {
+    muted -> app.replay.core.designsystem.shell.OutputIndicator.MUTED
+    route == app.replay.player.service.AudioRoute.BLUETOOTH -> app.replay.core.designsystem.shell.OutputIndicator.BLUETOOTH
+    route == app.replay.player.service.AudioRoute.WIRED -> app.replay.core.designsystem.shell.OutputIndicator.HEADPHONES
+    route == app.replay.player.service.AudioRoute.SPEAKER -> app.replay.core.designsystem.shell.OutputIndicator.PHONE_SPEAKER
+    else -> null
+}
+
